@@ -6,3 +6,7 @@ __pycache__/
 data/
 *.db
 .idea/
+*.iml
+.venv2/
+.venv_backup
+misc.xml
