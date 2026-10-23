@@ -9,4 +9,5 @@ data/
 *.iml
 .venv2/
 .venv_backup
-misc.xml
+.idea/misc.xml
+data/
