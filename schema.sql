@@ -1,19 +1,18 @@
 PRAGMA foreign_keys = ON;  -- must be set on every connection in SQLite
 
 CREATE TABLE IF NOT EXISTS authors (
-    id   INTEGER PRIMARY KEY,
+    id   INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE
 );
 
 CREATE TABLE IF NOT EXISTS books (
-    id         INTEGER PRIMARY KEY,
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
     isbn       TEXT UNIQUE,
     title      TEXT NOT NULL,
-    subtitle   TEXT,
     language   TEXT NOT NULL DEFAULT 'en',
     publisher  TEXT,
     year       INTEGER,
-    cover_path TEXT,
+    cover_url TEXT,
     added_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
