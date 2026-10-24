@@ -11,3 +11,4 @@ data/
 .venv_backup
 .idea/misc.xml
 data/
+**/*.db
