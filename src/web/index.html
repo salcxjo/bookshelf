@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Bookshelf</title>
+<style>
+  :root {
+    --bg: #faf8f5; --card: #ffffff; --text: #1f1d1a; --muted: #6f6a62;
+    --line: #e7e2da; --accent: #2d5a4a; --on-accent: #ffffff; --danger: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181a; --card: #202326; --text: #ece9e4; --muted: #9a958d;
+      --line: #2f3337; --accent: #6fbf9f; --on-accent: #10201a; --danger: #f2a199;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    position: sticky; top: 0; z-index: 5; background: var(--bg);
+    border-bottom: 1px solid var(--line);
+    padding: max(12px, env(safe-area-inset-top)) 16px 12px;
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  }
+  h1 { font-size: 1.25rem; margin: 0; }
+  .scan {
+    background: var(--accent); color: var(--on-accent); border-radius: 999px;
+    padding: 10px 18px; font-weight: 600; cursor: pointer; user-select: none;
+  }
+  .scan.busy { opacity: .6; pointer-events: none; }
+  nav { display: flex; gap: 8px; padding: 12px 16px 0; overflow-x: auto; }
+  nav button {
+    flex: none; font: inherit; font-size: .9rem; padding: 6px 14px; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 999px;
+    background: var(--card); color: var(--text);
+  }
+  nav button.active { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  main {
+    padding: 16px; display: grid; gap: 16px;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    overflow: hidden; display: flex; flex-direction: column;
+  }
+  .cover { position: relative; aspect-ratio: 2 / 3; background: var(--line); }
+  .cover img, .cover .ph { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .cover img { object-fit: cover; }
+  .cover .ph {
+    display: flex; align-items: center; justify-content: center; text-align: center;
+    padding: 12px; color: var(--muted); font-weight: 600;
+  }
+  .info { padding: 10px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
+  .title { font-weight: 600; line-height: 1.25; }
+  .meta { color: var(--muted); font-size: .85rem; }
+  select {
+    width: 100%; padding: 6px; font: inherit; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--card); color: var(--text);
+  }
+  .stars button {
+    background: none; border: 0; padding: 0 2px; font-size: 1.3rem;
+    cursor: pointer; color: var(--line);
+  }
+  .stars button.on { color: #e0a100; }
+  .del {
+    margin-top: auto; background: none; border: 0; padding: 0; text-align: left;
+    font: inherit; font-size: .8rem; color: var(--danger); cursor: pointer;
+  }
+  .empty { grid-column: 1 / -1; text-align: center; color: var(--muted); padding: 48px 0; }
+  #toast {
+    position: fixed; left: 50%; bottom: max(20px, env(safe-area-inset-bottom));
+    transform: translateX(-50%); max-width: 90vw; padding: 10px 16px;
+    border-radius: 10px; background: var(--text); color: var(--bg);
+    opacity: 0; pointer-events: none; transition: opacity .2s;
+  }
+  #toast.show { opacity: 1; }
+  #toast.error { background: var(--danger); color: var(--bg); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Bookshelf</h1>
+  <label class="scan" id="scanBtn">
+    <span id="scanLabel">Scan book</span>
+    <input id="file" type="file" accept="image/*" capture="environment" hidden>
+  </label>
+</header>
+<nav id="tabs"></nav>
+<main id="grid"></main>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+const TABS = [["all", "All"], ["want", "Want to read"], ["reading", "Reading"], ["read", "Read"]];
+const STATUS_LABELS = { want: "Want to read", reading: "Reading", read: "Read" };
+const SCAN_ERRORS = {
+  400: "That file isn’t a readable image.",
+  413: "That photo is too large.",
+  422: "No barcode found. Try a closer, sharper photo of the back cover.",
+  502: "Open Library couldn’t be reached. Try again in a moment.",
+};
+
+let books = [];
+let tab = "all";
+
+const $ = (selector) => document.querySelector(selector);
+
+// Builds DOM nodes without innerHTML, so titles from the API can never inject markup.
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (key === "class") node.className = value;
+    else if (key === "text") node.textContent = value;
+    else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+    else node.setAttribute(key, value);
+  }
+  node.append(...children);
+  return node;
+}
+
+let toastTimer;
+function toast(message, isError = false) {
+  const t = $("#toast");
+  t.textContent = message;
+  t.className = isError ? "show error" : "show";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.className = ""; }, 4500);
+}
+
+async function api(path, options) {
+  const res = await fetch(path, options);
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail ?? detail; } catch { /* no JSON body */ }
+    const err = new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    err.status = res.status;
+    throw err;
+  }
+  return res.status === 204 ? null : res.json();
+}
+
+async function load() {
+  books = await api("/books");
+  render();
+}
+
+async function patch(book, changes) {
+  try {
+    const updated = await api(`/books/${book.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(changes),
+    });
+    books = books.map((b) => (b.id === updated.id ? updated : b));
+  } catch (err) {
+    toast(err.message, true);
+  }
+  render(); // also resets a dropdown whose change failed
+}
+
+async function remove(book) {
+  if (!confirm(`Remove “${book.title}” from your library?`)) return;
+  try {
+    await api(`/books/${book.id}`, { method: "DELETE" });
+    books = books.filter((b) => b.id !== book.id);
+  } catch (err) {
+    toast(err.message, true);
+  }
+  render();
+}
+
+function card(book) {
+  const cover = el("div", { class: "cover" },
+    el("span", { class: "ph", dir: "auto", text: book.title }));
+  if (book.cover_url) {
+    const img = el("img", { src: book.cover_url, alt: "", loading: "lazy", referrerpolicy: "no-referrer" });
+    img.addEventListener("error", () => img.remove()); // falls back to the title placeholder
+    cover.append(img);
+  }
+
+  const select = el("select", { "aria-label": `Status for ${book.title}` },
+    ...Object.entries(STATUS_LABELS).map(([value, label]) => el("option", { value, text: label })));
+  select.value = book.status ?? "want";
+  select.addEventListener("change", () => patch(book, { status: select.value }));
+
+  const byline = [book.authors.join(", "), book.year].filter(Boolean).join(" · ");
+  const info = el("div", { class: "info" },
+    el("div", { class: "title", dir: "auto", text: book.title }),
+    el("div", { class: "meta", dir: "auto", text: byline }),
+    select);
+
+  if (book.finished_on) info.append(el("div", { class: "meta", text: `Finished ${book.finished_on}` }));
+  else if (book.started_on) info.append(el("div", { class: "meta", text: `Started ${book.started_on}` }));
+
+  if (book.status === "read") {
+    const stars = el("div", { class: "stars", role: "group", "aria-label": "Rating" });
+    for (let i = 1; i <= 5; i++) {
+      stars.append(el("button", {
+        class: i <= (book.rating ?? 0) ? "on" : "",
+        "aria-label": `${i} star${i > 1 ? "s" : ""}`,
+        text: "★",
+        onclick: () => patch(book, { rating: book.rating === i ? null : i }), // tap again to clear
+      }));
+    }
+    info.append(stars);
+  }
+
+  info.append(el("button", { class: "del", text: "Remove", onclick: () => remove(book) }));
+  return el("article", { class: "card" }, cover, info);
+}
+
+function render() {
+  $("#tabs").replaceChildren(...TABS.map(([key, label]) => {
+    const count = key === "all" ? books.length : books.filter((b) => b.status === key).length;
+    return el("button", {
+      class: key === tab ? "active" : "",
+      text: `${label} (${count})`,
+      onclick: () => { tab = key; render(); },
+    });
+  }));
+
+  const shown = tab === "all" ? books : books.filter((b) => b.status === tab);
+  const empty = books.length
+    ? "Nothing on this shelf yet."
+    : "No books yet. Tap “Scan book” to add your first.";
+  $("#grid").replaceChildren(...(shown.length ? shown.map(card) : [el("p", { class: "empty", text: empty })]));
+}
+
+$("#file").addEventListener("change", async (event) => {
+  const file = event.target.files[0];
+  event.target.value = ""; // lets the same photo be chosen again
+  if (!file) return;
+
+  const form = new FormData();
+  form.append("file", file);
+  const shelf = tab === "all" ? "want" : tab; // scan straight onto the shelf you're viewing
+
+  $("#scanBtn").classList.add("busy");
+  $("#scanLabel").textContent = "Scanning…";
+  try {
+    const book = await api(`/scan?shelf_status=${shelf}`, { method: "POST", body: form });
+    const alreadyThere = books.some((b) => b.id === book.id);
+    await load();
+    toast(alreadyThere ? `Already in your library: ${book.title}` : `Added: ${book.title}`);
+  } catch (err) {
+    toast(SCAN_ERRORS[err.status] ?? err.message, true);
+  } finally {
+    $("#scanBtn").classList.remove("busy");
+    $("#scanLabel").textContent = "Scan book";
+  }
+});
+
+load().catch((err) => toast(err.message, true));
+</script>
+</body>
+</html>
