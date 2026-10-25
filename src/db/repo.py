@@ -3,7 +3,8 @@ import json
 import sqlite3
 from pathlib import Path
 
-SCHEMA_PATH = Path(__file__).with_name("schema.sql")
+from bookshelf.db.migrate import migrate
+
 STATUSES = ("want", "reading", "read")
 
 
@@ -26,8 +27,8 @@ def get_connection(path: str | Path) -> sqlite3.Connection:
 
 
 def init_db(conn: sqlite3.Connection) -> None:
-    """Create all tables/indexes from schema.sql (safe to run repeatedly)."""
-    conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+    """Bring the database up to the latest schema (see db/migrate.py). Safe to repeat."""
+    migrate(conn)
 
 
 # --------------------------------------------------------------------------- #
@@ -36,9 +37,11 @@ def init_db(conn: sqlite3.Connection) -> None:
 
 # One query shape for every read, so get/list always return the same dict:
 # the book's columns, its shelf columns (None if unshelved) and `authors` as a
-# list in the order they were inserted (ba.rowid).
+# list in the order they were inserted (ba.rowid). `description` is left out on purpose:
+# synopses are long, so they will be served by a per-book endpoint, not the whole list.
 _BOOK_SELECT = """
     SELECT b.id, b.isbn, b.title, b.subtitle, b.publisher, b.year, b.cover_url,
+           b.work_key, b.source, b.owned,
            s.status, s.rating, s.started_on, s.finished_on,
            (SELECT json_group_array(name) FROM (
                 SELECT a.name AS name
@@ -55,6 +58,7 @@ _BOOK_SELECT = """
 def _to_book(row: sqlite3.Row) -> dict:
     book = dict(row)
     book["authors"] = json.loads(book["authors"])
+    book["owned"] = bool(book["owned"])
     return book
 
 
@@ -95,8 +99,10 @@ def add_book(conn: sqlite3.Connection, book: dict) -> int:
         try:
             cursor = conn.execute(
                 """
-                INSERT INTO books(isbn, title, subtitle, publisher, year, cover_url)
-                VALUES (:isbn, :title, :subtitle, :publisher, :year, :cover_url)
+                INSERT INTO books(isbn, title, subtitle, publisher, year, cover_url,
+                                  description, work_key, source, owned)
+                VALUES (:isbn, :title, :subtitle, :publisher, :year, :cover_url,
+                        :description, :work_key, :source, :owned)
                 """,
                 {
                     "isbn": book.get("isbn"),
@@ -105,6 +111,10 @@ def add_book(conn: sqlite3.Connection, book: dict) -> int:
                     "publisher": book.get("publisher"),
                     "year": book.get("year"),
                     "cover_url": book.get("cover_url"),
+                    "description": book.get("description"),
+                    "work_key": book.get("work_key"),
+                    "source": book.get("source", "scan"),
+                    "owned": int(book.get("owned", True)),
                 },
             )
         except sqlite3.IntegrityError as exc:

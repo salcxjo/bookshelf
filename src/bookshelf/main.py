@@ -1,5 +1,6 @@
 import os
 import sqlite3
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
@@ -7,9 +8,10 @@ import requests
 from fastapi import Depends, FastAPI, HTTPException, Query, Response, UploadFile, status
 from pydantic import BaseModel, Field
 
-from db import repo
-from lookup.openlibrary import fetch_by_isbn
-from vision.barcode import decode_isbn_from_bytes
+from bookshelf.db import repo
+from bookshelf.db.migrate import migrate
+from bookshelf.lookup.openlibrary import fetch_by_isbn
+from bookshelf.vision.barcode import decode_isbn_from_bytes
 
 # src/bookshelf/main.py -> parents[2] is the repo root. Override with BOOKSHELF_DB.
 DB_PATH = Path(
@@ -17,7 +19,21 @@ DB_PATH = Path(
 )
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # phone photos are usually 2-10 MB
 
-app = FastAPI()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """On startup: create data/ if needed and bring the database schema up to date."""
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = repo.get_connection(DB_PATH)
+    try:
+        migrate(conn)
+    finally:
+        conn.close()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 def get_db():
@@ -150,7 +166,3 @@ def scan(
 
     response.status_code = status.HTTP_201_CREATED
     return repo.get_book_by_isbn(conn, isbn)
-from fastapi.staticfiles import StaticFiles   # add with the other imports
-
-WEB_DIR = Path(__file__).resolve().parents[2] / "src" / "web"
-app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")   # must be last
