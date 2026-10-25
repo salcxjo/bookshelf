@@ -1,4 +1,7 @@
-PRAGMA foreign_keys = ON;  -- must be set on every connection in SQLite
+-- 001: the original schema. Every statement is IF NOT EXISTS, so applying this to a
+-- database that was created by hand from the old schema.sql changes nothing.
+-- Do not put BEGIN/COMMIT or PRAGMA foreign_keys in migration files: migrate.py wraps
+-- each file in its own transaction, and get_connection() already enables foreign keys.
 
 CREATE TABLE IF NOT EXISTS authors (
     id   INTEGER PRIMARY KEY AUTOINCREMENT,
