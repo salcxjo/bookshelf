@@ -1,88 +1,127 @@
+"""All SQL lives here. Every function takes an open connection as its first argument."""
 import sqlite3
 from pathlib import Path
-'''
 
-{'isbn': '9781234567897', 'title': 'Construction Cost Consultant for Residential Commercial and Industrial Construction Projects', 'subtitle': None, 'authors': ['Toqeer Khan'], 'publisher': 'COMET Estimating LLC', 'year': 2026, 'cover_url': 'https://covers.openlibrary.org/b/id/15234162-L.jpg'}
+SCHEMA_PATH = Path(__file__).with_name("schema.sql")
+STATUSES = ("want", "reading", "read")
 
-'''
 
-class RepoManager:
-    def __init__(self, db_name="library.db"):
-        # Explicitly place it in your project root or a known absolute path for debugging
-        project_root = Path(__file__).resolve().parent.parent.parent # adjust based on your structure
-        db_path = project_root / db_name
+class DuplicateBookError(Exception):
+    """Raised when a book with the same ISBN already exists."""
 
-        print(f"Connecting to database at: {db_path}")
-        self.conn = sqlite3.connect(db_path)
-        self.conn.execute("PRAGMA foreign_keys = ON;")
-        self.cursor = self.conn.cursor()
 
-    def add_book(self, book: dict) -> None:
+def get_connection(path: str | Path) -> sqlite3.Connection:
+    """Open a connection with dict-like rows and foreign keys enforced.
+
+    Open one per request (see get_db in main.py), not one global connection.
+    check_same_thread=False is safe for that pattern because FastAPI may run a
+    dependency and its route in different worker threads, but a single
+    connection is only ever used by one request at a time.
+    """
+    conn = sqlite3.connect(path, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON;")
+    return conn
+
+
+def init_db(conn: sqlite3.Connection) -> None:
+    """Create all tables/indexes from schema.sql (safe to run repeatedly)."""
+    conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+
+def add_book(conn: sqlite3.Connection, book: dict) -> int:
+    """Insert a book, its authors, and the links between them in one transaction.
+
+    Returns the new book's id. Raises DuplicateBookError if the ISBN exists.
+    """
+    # `with conn:` commits on success and rolls everything back on any exception
+    with conn:
         try:
-            # 1. Insert the book
-            self.cursor.execute("""
-                INSERT OR IGNORE INTO books(isbn, title, language, publisher, year, cover_url) VALUES
-                (:isbn, :title, :language, :publisher, :year, :cover_url)
-            """, {
-                "isbn": book.get("isbn"),
-                "title": book.get("title"),
-                "language": book.get("language", "en"),
-                "publisher": book.get("publisher"),
-                "year": book.get("year"),
-                "cover_url": book.get("cover_url")
-            })
+            cursor = conn.execute(
+                """
+                INSERT INTO books(isbn, title, subtitle, publisher, year, cover_url)
+                VALUES (:isbn, :title, :subtitle, :publisher, :year, :cover_url)
+                """,
+                {
+                    "isbn": book.get("isbn"),
+                    "title": book.get("title"),
+                    "subtitle": book.get("subtitle"),
+                    "publisher": book.get("publisher"),
+                    "year": book.get("year"),
+                    "cover_url": book.get("cover_url"),
+                },
+            )
+        except sqlite3.IntegrityError as exc:
+            # Only translate the duplicate-ISBN case; other violations (e.g. a
+            # missing title) should surface as the real error.
+            if "books.isbn" in str(exc):
+                raise DuplicateBookError(book.get("isbn")) from exc
+            raise
+        book_id = cursor.lastrowid
 
-            # Get the book's primary key
-            self.cursor.execute("SELECT id FROM books WHERE isbn = ?", (book.get("isbn"),))
-            row = self.cursor.fetchone()
-            if not row:
-                print("Failed to retrieve book ID after insert.")
-                return
-            book_id = row[0]
+        for name in book.get("authors", []):
+            conn.execute("INSERT OR IGNORE INTO authors(name) VALUES (?)", (name,))
+            author_id = conn.execute(
+                "SELECT id FROM authors WHERE name = ?", (name,)
+            ).fetchone()["id"]
+            conn.execute(
+                "INSERT OR IGNORE INTO book_authors(book_id, author_id) VALUES (?, ?)",
+                (book_id, author_id),
+            )
 
-            # 2. Insert authors and link them
-            authors = book.get("authors", [])
-            for author_name in authors:
-                self.cursor.execute("""
-                    INSERT OR IGNORE INTO authors(name) VALUES (?)
-                """, (author_name,))
+    return book_id
 
-                self.cursor.execute("SELECT id FROM authors WHERE name = ?", (author_name,))
-                author_row = self.cursor.fetchone()
-                if author_row:
-                    author_id = author_row[0]
-                    self.cursor.execute("""
-                        INSERT OR IGNORE INTO book_authors(book_id, author_id) VALUES (?, ?)
-                    """, (book_id, author_id))
 
-            # 3. Explicitly commit changes
-            self.conn.commit()
-            print("Successfully added book to database!")
+def get_book_by_isbn(conn: sqlite3.Connection, isbn: str) -> dict | None:
+    """Return a book in the same shape as fetch_by_isbn, plus its id and shelf status.
 
-        except Exception as e:
-            print(f"Database error during add_book: {e}")
-            self.conn.rollback()
-    def set_status(self, isbn: str, status: str, rating: int = None, started_on: str = None, finished_on: str = None):
-        # Example implementation for updating/adding to the shelf
-        self.cursor.execute("""
-            INSERT INTO shelf(book_id, status, rating, started_on, finished_on)
-            SELECT id, ?, ?, ?, ? FROM books WHERE isbn = ?
-            ON CONFLICT(book_id) DO UPDATE SET
-                status = excluded.status,
-                rating = excluded.rating,
-                started_on = excluded.started_on,
-                finished_on = excluded.finished_on
-        """, (status, rating, started_on, finished_on, isbn))
-        self.conn.commit()
+    `status` is None if the book has no shelf row yet.
+    """
+    row = conn.execute(
+        """
+        SELECT b.id, b.isbn, b.title, b.subtitle, b.publisher, b.year,
+               b.cover_url, s.status
+        FROM books b
+        LEFT JOIN shelf s ON s.book_id = b.id
+        WHERE b.isbn = ?
+        """,
+        (isbn,),
+    ).fetchone()
+    if row is None:
+        return None
 
-    def list_by_status(self, status: str) -> list:
-        self.cursor.execute("""
-            SELECT b.isbn, b.title, b.publisher, b.year, b.cover_url, s.status, s.rating
-            FROM books b
-            JOIN shelf s ON b.id = s.book_id
-            WHERE s.status = ?
-        """, (status,))
+    book = dict(row)
+    book["authors"] = [
+        r["name"]
+        for r in conn.execute(
+            """
+            SELECT a.name
+            FROM book_authors ba
+            JOIN authors a ON a.id = ba.author_id
+            WHERE ba.book_id = ?
+            ORDER BY ba.rowid  -- insertion order, i.e. the order the API listed them
+            """,
+            (book["id"],),
+        )
+    ]
+    return book
 
-        # Convert rows to dictionaries for easy reading
-        columns = [col[0] for col in self.cursor.description]
-        return [dict(zip(columns, row)) for row in self.cursor.fetchall()]
+
+def set_status(conn: sqlite3.Connection, book_id: int, status: str) -> None:
+    """Create or update the shelf row for a book.
+
+    Raises ValueError for an unknown status. An unknown book_id raises
+    sqlite3.IntegrityError (foreign key).
+    """
+    if status not in STATUSES:
+        raise ValueError(f"status must be one of {STATUSES}, got {status!r}")
+
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO shelf(book_id, status)
+            VALUES (?, ?)
+            ON CONFLICT(book_id) DO UPDATE SET status = excluded.status
+            """,
+            (book_id, status),
+        )   
