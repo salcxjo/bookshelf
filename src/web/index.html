@@ -84,6 +84,29 @@
   #toast.show { opacity: 1; }
   #toast.error { background: var(--danger); color: var(--bg); }
 
+  /* search, sort and filters */
+  .toolbar { display: flex; gap: 8px; padding: 12px 16px 0; }
+  .toolbar input[type="search"] { flex: 1; min-width: 0; }
+  .toolbar select { width: auto; max-width: 45%; }
+  input[type="search"], input[type="number"] {
+    padding: 8px 10px; font: inherit; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--card); color: var(--text);
+  }
+  .filters { padding: 8px 16px 0; }
+  .filters summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
+  .filter-row { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; padding: 10px 0 0; }
+  .filter-row label { display: flex; flex-direction: column; gap: 4px; font-size: .8rem; color: var(--muted); }
+  .filter-row input[type="number"] { width: 6.5rem; }
+  .filter-row select { width: auto; }
+  .result-info { margin: 0; padding: 8px 16px 0; }
+  .result-info:empty { display: none; }
+  .link {
+    background: none; border: 0; padding: 0; font: inherit; color: inherit;
+    text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 2px;
+    cursor: pointer;
+  }
+  .link:hover { text-decoration-color: currentColor; }
+
   /* batch import dialog */
   dialog {
     width: min(92vw, 520px); max-height: 88vh; padding: 16px; overflow-y: auto;
@@ -124,7 +147,38 @@
     </label>
   </div>
 </header>
+<section class="toolbar">
+  <input id="search" type="search" placeholder="Search title, author, year…" aria-label="Search" autocomplete="off" enterkeyhint="search">
+  <select id="sort" aria-label="Sort by">
+    <option value="added">Recently added</option>
+    <option value="title">Title A–Z</option>
+    <option value="author">Author A–Z</option>
+    <option value="year-desc">Year, newest</option>
+    <option value="year-asc">Year, oldest</option>
+    <option value="rating">Highest rated</option>
+    <option value="finished">Recently finished</option>
+  </select>
+</section>
+<details class="filters" id="filters">
+  <summary id="filtersSummary">Filters</summary>
+  <div class="filter-row">
+    <label>Min rating
+      <select id="minRating">
+        <option value="0">Any</option>
+        <option value="1">★ 1+</option>
+        <option value="2">★ 2+</option>
+        <option value="3">★ 3+</option>
+        <option value="4">★ 4+</option>
+        <option value="5">★ 5</option>
+      </select>
+    </label>
+    <label>Year from <input id="yearFrom" type="number" inputmode="numeric" min="0" max="2100"></label>
+    <label>Year to <input id="yearTo" type="number" inputmode="numeric" min="0" max="2100"></label>
+    <button class="btn" id="clearFilters" type="button">Clear</button>
+  </div>
+</details>
 <nav id="tabs"></nav>
+<p class="meta result-info" id="resultInfo"></p>
 <main id="grid"></main>
 <div id="toast" role="status" aria-live="polite"></div>
 
@@ -161,7 +215,75 @@ const MAX_EDGE = 2400;   // batch import shrinks photos so their longest side is
 const CONCURRENCY = 2;   // how many batch photos are scanned at the same time
 
 let books = [];
-let view = { tab: "all" };
+const VIEW_KEY = "bookshelf.view";
+const DEFAULT_VIEW = { tab: "all", q: "", sort: "added", minRating: 0, yearFrom: "", yearTo: "" };
+
+function loadView() {
+  try {
+    return { ...DEFAULT_VIEW, ...JSON.parse(localStorage.getItem(VIEW_KEY) ?? "{}") };
+  } catch {
+    return { ...DEFAULT_VIEW };
+  }
+}
+function saveView() {
+  try { localStorage.setItem(VIEW_KEY, JSON.stringify(view)); } catch { /* storage unavailable */ }
+}
+
+let view = loadView();
+
+// Case-, accent- and punctuation-insensitive text for searching. The three replaces
+// make Arabic and Persian spellings of ی / ک match, and ignore the zero-width joiner.
+const norm = (s) => String(s ?? "")
+  .normalize("NFD").replace(/\p{M}/gu, "")
+  .replace(/ي/g, "ی").replace(/ك/g, "ک").replace(/\u200c/g, "")
+  .toLowerCase();
+
+const collator = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
+
+// Missing values (no year, no rating...) always sort last, whichever direction is chosen.
+function compareBy(get, { desc = false, text = false } = {}) {
+  return (a, b) => {
+    const x = get(a), y = get(b);
+    if (x == null && y == null) return 0;
+    if (x == null) return 1;
+    if (y == null) return -1;
+    const result = text ? collator.compare(x, y) : x < y ? -1 : x > y ? 1 : 0;
+    return desc ? -result : result;
+  };
+}
+
+// "added" has no sorter: the server already returns newest first, and sort() is stable,
+// so every other sort breaks ties in that order.
+const SORTERS = {
+  added: null,
+  title: compareBy((b) => b.title, { text: true }),
+  author: compareBy((b) => b.authors[0], { text: true }),
+  "year-desc": compareBy((b) => b.year, { desc: true }),
+  "year-asc": compareBy((b) => b.year),
+  rating: compareBy((b) => b.rating, { desc: true }),
+  finished: compareBy((b) => b.finished_on, { desc: true }),
+};
+
+function activeFilterCount() {
+  return (view.minRating > 0) + Boolean(view.yearFrom) + Boolean(view.yearTo);
+}
+
+// Every book matching the search box and filters, on any shelf.
+function matchingBooks() {
+  const tokens = norm(view.q).split(/\s+/).filter(Boolean);
+  const from = parseInt(view.yearFrom, 10);
+  const to = parseInt(view.yearTo, 10);
+  return books.filter((b) => {
+    if ((b.rating ?? 0) < view.minRating) return false;
+    if (!Number.isNaN(from) && !(b.year != null && b.year >= from)) return false;
+    if (!Number.isNaN(to) && !(b.year != null && b.year <= to)) return false;
+    if (tokens.length) {
+      b._hay ??= norm([b.title, b.subtitle, b.authors.join(" "), b.publisher, b.year].join(" "));
+      if (!tokens.every((t) => b._hay.includes(t))) return false;
+    }
+    return true;
+  });
+}
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -229,6 +351,19 @@ async function remove(book) {
   render();
 }
 
+function metaLine(book) {
+  const line = el("div", { class: "meta" });
+  book.authors.forEach((name, i) => {
+    if (i) line.append(", ");
+    line.append(el("button", {
+      class: "link", dir: "auto", text: name, title: `Search for ${name}`,
+      onclick: () => applySearch(name),
+    }));
+  });
+  if (book.year) line.append((book.authors.length ? " · " : "") + book.year);
+  return line;
+}
+
 function card(book) {
   const cover = el("div", { class: "cover" },
     el("span", { class: "ph", dir: "auto", text: book.title }));
@@ -243,10 +378,9 @@ function card(book) {
   select.value = book.status ?? "want";
   select.addEventListener("change", () => patch(book, { status: select.value }));
 
-  const byline = [book.authors.join(", "), book.year].filter(Boolean).join(" · ");
   const info = el("div", { class: "info" },
     el("div", { class: "title", dir: "auto", text: book.title }),
-    el("div", { class: "meta", dir: "auto", text: byline }),
+    metaLine(book),
     select);
 
   if (book.finished_on) info.append(el("div", { class: "meta", text: `Finished ${book.finished_on}` }));
@@ -270,19 +404,31 @@ function card(book) {
 }
 
 function render() {
+  if (!TABS.some(([key]) => key === view.tab)) view.tab = "all";
+  const matching = matchingBooks();
+
+  // Tab counts reflect the current search and filters
   $("#tabs").replaceChildren(...TABS.map(([key, label]) => {
-    const count = key === "all" ? books.length : books.filter((b) => b.status === key).length;
+    const count = key === "all" ? matching.length : matching.filter((b) => b.status === key).length;
     return el("button", {
       class: key === view.tab ? "active" : "",
       text: `${label} (${count})`,
-      onclick: () => { view.tab = key; render(); },
+      onclick: () => { view.tab = key; saveView(); render(); },
     });
   }));
 
-  const shown = view.tab === "all" ? books : books.filter((b) => b.status === view.tab);
-  const empty = books.length
-    ? "Nothing on this shelf yet."
-    : "No books yet. Tap “Scan” or “Import” to add your first.";
+  const shown = view.tab === "all" ? matching.slice() : matching.filter((b) => b.status === view.tab);
+  const sorter = SORTERS[view.sort];
+  if (sorter) shown.sort(sorter);
+
+  const filtering = Boolean(norm(view.q).trim()) || activeFilterCount() > 0;
+  $("#resultInfo").textContent = filtering ? `${shown.length} of ${books.length} books` : "";
+  const n = activeFilterCount();
+  $("#filtersSummary").textContent = n ? `Filters (${n})` : "Filters";
+
+  const empty = !books.length
+    ? "No books yet. Tap “Scan” or “Import” to add your first."
+    : filtering ? "No books match your search or filters." : "Nothing on this shelf yet.";
   $("#grid").replaceChildren(...(shown.length ? shown.map(card) : [el("p", { class: "empty", text: empty })]));
 }
 
@@ -440,6 +586,43 @@ $("#importDialog").addEventListener("cancel", (event) => {
   if (importState.running) event.preventDefault(); // Esc shouldn't abandon a running import
 });
 
+// ---------------------------------------------------------------- search, sort, filters
+
+function syncControls() {
+  $("#search").value = view.q;
+  $("#sort").value = view.sort;
+  $("#minRating").value = String(view.minRating);
+  $("#yearFrom").value = view.yearFrom;
+  $("#yearTo").value = view.yearTo;
+  $("#filters").open = activeFilterCount() > 0;
+}
+
+function applySearch(q) {
+  view.q = q;
+  $("#search").value = q;
+  saveView();
+  render();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+let searchTimer;
+$("#search").addEventListener("input", (event) => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => { view.q = event.target.value; saveView(); render(); }, 120);
+});
+$("#sort").addEventListener("change", (event) => { view.sort = event.target.value; saveView(); render(); });
+$("#minRating").addEventListener("change", (event) => { view.minRating = Number(event.target.value); saveView(); render(); });
+for (const [selector, key] of [["#yearFrom", "yearFrom"], ["#yearTo", "yearTo"]]) {
+  $(selector).addEventListener("input", (event) => { view[key] = event.target.value.trim(); saveView(); render(); });
+}
+$("#clearFilters").addEventListener("click", () => {
+  Object.assign(view, { q: "", minRating: 0, yearFrom: "", yearTo: "" });
+  syncControls();
+  saveView();
+  render();
+});
+
+syncControls();
 load().catch((err) => toast(err.message, true));
 </script>
 </body>
