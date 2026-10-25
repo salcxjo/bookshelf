@@ -150,3 +150,7 @@ def scan(
 
     response.status_code = status.HTTP_201_CREATED
     return repo.get_book_by_isbn(conn, isbn)
+from fastapi.staticfiles import StaticFiles   # add with the other imports
+
+WEB_DIR = Path(__file__).resolve().parents[2] / "web"
+app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")   # must be last
