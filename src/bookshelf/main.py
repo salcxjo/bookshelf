@@ -1,13 +1,15 @@
 import os
 import sqlite3
 from pathlib import Path
+from typing import Literal
 
 import requests
-from fastapi import Depends, FastAPI, HTTPException, Response, UploadFile, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Response, UploadFile, status
+from pydantic import BaseModel, Field
 
-from db import repo
-from lookup.openlibrary import fetch_by_isbn
-from vision.barcode import decode_isbn_from_bytes
+from bookshelf.db import repo
+from bookshelf.lookup.openlibrary import fetch_by_isbn
+from bookshelf.vision.barcode import decode_isbn_from_bytes
 
 # src/bookshelf/main.py -> parents[2] is the repo root. Override with BOOKSHELF_DB.
 DB_PATH = Path(
@@ -27,6 +29,13 @@ def get_db():
         conn.close()
 
 
+class ShelfUpdate(BaseModel):
+    """Body of PATCH /books/{id}. Send only the fields you want to change."""
+
+    status: Literal["want", "reading", "read"] | None = None
+    rating: int | None = Field(default=None, ge=1, le=5)  # null clears the rating
+
+
 @app.get("/health")
 def health():
     return {"ok": True}
@@ -43,6 +52,42 @@ def lookup(isbn: str):
     return book
 
 
+@app.get("/books")
+def list_books(
+    shelf_status: str | None = Query(default=None, alias="status"),
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """The whole library, newest first. Optional filter: /books?status=read"""
+    try:
+        return repo.list_books(conn, shelf_status)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.patch("/books/{book_id}")
+def update_book(book_id: int, update: ShelfUpdate, conn: sqlite3.Connection = Depends(get_db)):
+    """Change a book's status and/or rating."""
+    changes = update.model_dump(exclude_unset=True)  # only what the client actually sent
+    if not changes:
+        raise HTTPException(
+            status_code=422, detail="nothing to update"
+        )
+    try:
+        found = repo.update_shelf(conn, book_id, changes)
+    except ValueError as exc:  # e.g. "status": null
+        raise HTTPException(status_code=422, detail=str(exc))
+    if not found:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+    return repo.get_book_by_id(conn, book_id)
+
+
+@app.delete("/books/{book_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_book(book_id: int, conn: sqlite3.Connection = Depends(get_db)):
+    if not repo.delete_book(conn, book_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @app.post("/scan")
 def scan(
     file: UploadFile,
@@ -56,14 +101,14 @@ def scan(
     """
     if shelf_status not in repo.STATUSES:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=422,
             detail=f"shelf_status must be one of {repo.STATUSES}",
         )
 
     data = file.file.read()
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=413,
             detail="image too large",
         )
 
@@ -74,7 +119,7 @@ def scan(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="not an image")
     if isbn is None:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="no barcode found"
+            status_code=422, detail="no barcode found"
         )
 
     # 2. Already in the library? Skip the API call.
