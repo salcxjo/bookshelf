@@ -20,6 +20,13 @@ def _parse_year(publish_date: str | None) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _usable_cover(url: str | None) -> str | None:
+    """Open Library uses cover id -1 as its 'no cover' placeholder."""
+    if not url or "/id/-1-" in url:
+        return None
+    return url
+
+
 def fetch_by_isbn(isbn: str) -> dict | None:
     """Return book metadata for an ISBN, or None if Open Library doesn't know it.
 
@@ -47,5 +54,5 @@ def fetch_by_isbn(isbn: str) -> dict | None:
         "authors": [a["name"] for a in result.get("authors", [])],
         "publisher": publishers[0]["name"] if publishers else None,
         "year": _parse_year(result.get("publish_date")),
-        "cover_url": result.get("cover", {}).get("large"),
+        "cover_url": _usable_cover(result.get("cover", {}).get("large")),
     }
