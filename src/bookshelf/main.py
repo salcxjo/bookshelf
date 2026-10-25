@@ -5,9 +5,9 @@ from pathlib import Path
 import requests
 from fastapi import Depends, FastAPI, HTTPException, Response, UploadFile, status
 
-from bookshelf.db import repo
-from bookshelf.lookup.openlibrary import fetch_by_isbn
-from bookshelf.vision.barcode import decode_isbn_from_bytes
+from db import repo
+from lookup.openlibrary import fetch_by_isbn
+from vision.barcode import decode_isbn_from_bytes
 
 # src/bookshelf/main.py -> parents[2] is the repo root. Override with BOOKSHELF_DB.
 DB_PATH = Path(

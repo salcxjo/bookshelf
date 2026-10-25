@@ -9,13 +9,16 @@ CREATE TABLE IF NOT EXISTS books (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     isbn       TEXT UNIQUE,
     title      TEXT NOT NULL,
+    subtitle   TEXT,
     language   TEXT NOT NULL DEFAULT 'en',
     publisher  TEXT,
     year       INTEGER,
-    cover_url TEXT,
+    cover_url  TEXT,
     added_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Keep this as a normal rowid table: repo.get_book_by_isbn orders authors by
+-- ba.rowid (insertion order), which WITHOUT ROWID would remove.
 CREATE TABLE IF NOT EXISTS book_authors (
     book_id   INTEGER NOT NULL REFERENCES books(id)   ON DELETE CASCADE,
     author_id INTEGER NOT NULL REFERENCES authors(id) ON DELETE CASCADE,
@@ -30,5 +33,5 @@ CREATE TABLE IF NOT EXISTS shelf (
     finished_on TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_shelf_status       ON shelf(status);
+CREATE INDEX IF NOT EXISTS idx_shelf_status        ON shelf(status);
 CREATE INDEX IF NOT EXISTS idx_book_authors_author ON book_authors(author_id);
