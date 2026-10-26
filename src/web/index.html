@@ -52,14 +52,24 @@
     overflow: hidden; display: flex; flex-direction: column;
   }
   .cover { position: relative; aspect-ratio: 2 / 3; background: var(--line); }
-  .cover img, .cover .ph { position: absolute; inset: 0; width: 100%; height: 100%; }
-  .cover img { object-fit: cover; }
-  .cover .ph {
+  .cover img, .cover .ph, .detail-cover img, .detail-cover .ph { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .cover img, .detail-cover img { object-fit: cover; }
+  .cover .ph, .detail-cover .ph {
     display: flex; align-items: center; justify-content: center; text-align: center;
     padding: 12px; color: var(--muted); font-weight: 600;
   }
   .info { padding: 10px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
   .title { font-weight: 600; line-height: 1.25; }
+  .title-btn {
+    background: none; border: 0; padding: 0; font: inherit; font-weight: 600; line-height: 1.25;
+    color: inherit; text-align: start; cursor: pointer; overflow-wrap: anywhere;
+  }
+  .title-btn:hover { text-decoration: underline; }
+  .cover.clickable { cursor: pointer; }
+  .badge {
+    align-self: flex-start; font-size: .7rem; padding: 1px 8px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--muted);
+  }
   .meta { color: var(--muted); font-size: .85rem; }
   select {
     width: 100%; padding: 6px; font: inherit; border-radius: 8px;
@@ -106,6 +116,31 @@
     cursor: pointer;
   }
   .link:hover { text-decoration-color: currentColor; }
+
+  /* book detail dialog */
+  dialog.detail { width: min(94vw, 640px); }
+  .detail-head { display: flex; gap: 14px; }
+  .detail-cover {
+    position: relative; flex: none; width: 110px; aspect-ratio: 2 / 3;
+    background: var(--line); border-radius: 8px; overflow: hidden;
+  }
+  .detail-main { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 8px; }
+  .detail-main h2 { margin: 0; font-size: 1.2rem; overflow-wrap: anywhere; }
+  .detail h3 {
+    margin: 18px 0 6px; font-size: .8rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+  }
+  .synopsis { margin: 0; white-space: pre-line; }
+  .check { display: flex; align-items: center; gap: 8px; }
+  textarea, .edit-form input[type="text"], .edit-form input[type="url"], .edit-form input[type="number"] {
+    width: 100%; padding: 8px 10px; font: inherit; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--card); color: var(--text);
+  }
+  .edit-form { display: grid; gap: 10px; margin-top: 10px; }
+  .edit-form label { display: flex; flex-direction: column; gap: 4px; font-size: .8rem; color: var(--muted); }
+  details summary { cursor: pointer; margin-top: 14px; }
+  .detail-actions { justify-content: space-between; margin-top: 16px; }
+  .btn.danger { color: var(--danger); }
 
   /* batch import dialog */
   dialog {
@@ -181,6 +216,38 @@
 <p class="meta result-info" id="resultInfo"></p>
 <main id="grid"></main>
 <div id="toast" role="status" aria-live="polite"></div>
+
+<dialog id="detailDialog" class="detail" aria-labelledby="detailTitle">
+  <div class="detail-head">
+    <div class="detail-cover" id="detailCover"></div>
+    <div class="detail-main">
+      <h2 id="detailTitle" dir="auto"></h2>
+      <div class="meta" id="detailMeta"></div>
+      <div id="detailControls" class="detail-main"></div>
+    </div>
+  </div>
+  <h3>Synopsis</h3>
+  <p class="synopsis" id="detailSynopsis" dir="auto"></p>
+  <button class="link meta" id="synopsisRefresh" type="button" hidden>Look again</button>
+  <h3>Notes</h3>
+  <textarea id="detailNotes" rows="4" maxlength="5000" placeholder="Your notes about this book"></textarea>
+  <details id="editBox">
+    <summary class="meta">Edit details</summary>
+    <form class="edit-form" id="editForm">
+      <label>Title <input id="editTitle" type="text" required maxlength="300"></label>
+      <label>Subtitle <input id="editSubtitle" type="text" maxlength="300"></label>
+      <label>Authors (one per line) <textarea id="editAuthors" rows="3"></textarea></label>
+      <label>Publisher <input id="editPublisher" type="text" maxlength="300"></label>
+      <label>Year <input id="editYear" type="number" inputmode="numeric" min="0" max="2100"></label>
+      <label>Cover image URL <input id="editCover" type="url" maxlength="1000" placeholder="https://…"></label>
+      <button class="btn primary" type="submit">Save details</button>
+    </form>
+  </details>
+  <div class="dialog-actions detail-actions">
+    <button class="btn danger" id="detailRemove" type="button">Remove</button>
+    <button class="btn" id="detailClose" type="button">Close</button>
+  </div>
+</dialog>
 
 <dialog id="importDialog" aria-labelledby="importTitle">
   <h2 id="importTitle">Import photos</h2>
@@ -314,7 +381,9 @@ async function api(path, options) {
   if (!res.ok) {
     let detail = res.statusText;
     try { detail = (await res.json()).detail ?? detail; } catch { /* no JSON body */ }
-    const err = new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    const message = Array.isArray(detail) ? detail.map((d) => d.msg ?? JSON.stringify(d)).join("; ")
+      : typeof detail === "string" ? detail : JSON.stringify(detail);
+    const err = new Error(message);
     err.status = res.status;
     throw err;
   }
@@ -326,7 +395,8 @@ async function load() {
   render();
 }
 
-async function patch(book, changes) {
+async function patch(book, changes, message) {
+  let ok = false;
   try {
     const updated = await api(`/books/${book.id}`, {
       method: "PATCH",
@@ -334,10 +404,14 @@ async function patch(book, changes) {
       body: JSON.stringify(changes),
     });
     books = books.map((b) => (b.id === updated.id ? updated : b));
+    ok = true;
+    if (message) toast(message);
   } catch (err) {
     toast(err.message, true);
   }
   render(); // also resets a dropdown whose change failed
+  if (detailId === book.id) renderDetail();
+  return ok;
 }
 
 async function remove(book) {
@@ -345,6 +419,7 @@ async function remove(book) {
   try {
     await api(`/books/${book.id}`, { method: "DELETE" });
     books = books.filter((b) => b.id !== book.id);
+    if (detailId === book.id) $("#detailDialog").close();
   } catch (err) {
     toast(err.message, true);
   }
@@ -364,44 +439,164 @@ function metaLine(book) {
   return line;
 }
 
-function card(book) {
-  const cover = el("div", { class: "cover" },
-    el("span", { class: "ph", dir: "auto", text: book.title }));
+function coverNode(book, className) {
+  const cover = el("div", { class: className }, el("span", { class: "ph", dir: "auto", text: book.title }));
   if (book.cover_url) {
     const img = el("img", { src: book.cover_url, alt: "", loading: "lazy", referrerpolicy: "no-referrer" });
     img.addEventListener("error", () => img.remove()); // falls back to the title placeholder
     cover.append(img);
   }
+  return cover;
+}
 
+function statusSelect(book) {
   const select = el("select", { "aria-label": `Status for ${book.title}` },
     ...Object.entries(STATUS_LABELS).map(([value, label]) => el("option", { value, text: label })));
   select.value = book.status ?? "want";
   select.addEventListener("change", () => patch(book, { status: select.value }));
+  return select;
+}
+
+function ratingStars(book) {
+  const stars = el("div", { class: "stars", role: "group", "aria-label": "Rating" });
+  for (let i = 1; i <= 5; i++) {
+    stars.append(el("button", {
+      class: i <= (book.rating ?? 0) ? "on" : "",
+      "aria-label": `${i} star${i > 1 ? "s" : ""}`,
+      text: "★",
+      onclick: () => patch(book, { rating: book.rating === i ? null : i }), // tap again to clear
+    }));
+  }
+  return stars;
+}
+
+function datesLine(book) {
+  if (book.finished_on) return el("div", { class: "meta", text: `Finished ${book.finished_on}` });
+  if (book.started_on) return el("div", { class: "meta", text: `Started ${book.started_on}` });
+  return null;
+}
+
+function card(book) {
+  const cover = coverNode(book, "cover clickable");
+  cover.addEventListener("click", () => openDetail(book.id));
 
   const info = el("div", { class: "info" },
-    el("div", { class: "title", dir: "auto", text: book.title }),
+    el("button", { class: "title title-btn", dir: "auto", text: book.title, onclick: () => openDetail(book.id) }),
     metaLine(book),
-    select);
-
-  if (book.finished_on) info.append(el("div", { class: "meta", text: `Finished ${book.finished_on}` }));
-  else if (book.started_on) info.append(el("div", { class: "meta", text: `Started ${book.started_on}` }));
-
-  if (book.status === "read") {
-    const stars = el("div", { class: "stars", role: "group", "aria-label": "Rating" });
-    for (let i = 1; i <= 5; i++) {
-      stars.append(el("button", {
-        class: i <= (book.rating ?? 0) ? "on" : "",
-        "aria-label": `${i} star${i > 1 ? "s" : ""}`,
-        text: "★",
-        onclick: () => patch(book, { rating: book.rating === i ? null : i }), // tap again to clear
-      }));
-    }
-    info.append(stars);
-  }
-
+    statusSelect(book));
+  const dates = datesLine(book);
+  if (dates) info.append(dates);
+  if (!book.owned) info.append(el("span", { class: "badge", text: "Wishlist" }));
+  if (book.status === "read") info.append(ratingStars(book));
   info.append(el("button", { class: "del", text: "Remove", onclick: () => remove(book) }));
   return el("article", { class: "card" }, cover, info);
 }
+
+// ---------------------------------------------------------------- book detail
+
+let detailId = null;
+const currentDetail = () => books.find((b) => b.id === detailId);
+
+function fillEditForm(book) {
+  $("#editTitle").value = book.title;
+  $("#editSubtitle").value = book.subtitle ?? "";
+  $("#editAuthors").value = book.authors.join("\n");
+  $("#editPublisher").value = book.publisher ?? "";
+  $("#editYear").value = book.year ?? "";
+  $("#editCover").value = book.cover_url ?? "";
+}
+
+function renderDetail() {
+  const book = currentDetail();
+  if (!book) return;
+
+  $("#detailCover").replaceWith(Object.assign(coverNode(book, "detail-cover"), { id: "detailCover" }));
+  $("#detailTitle").textContent = book.title;
+
+  const meta = $("#detailMeta");
+  meta.replaceChildren();
+  if (book.subtitle) meta.append(el("div", { dir: "auto", text: book.subtitle }));
+  meta.append(metaLine(book));
+  const extra = [book.publisher, book.isbn && `ISBN ${book.isbn}`].filter(Boolean).join(" · ");
+  if (extra) meta.append(el("div", { dir: "auto", text: extra }));
+
+  const owned = el("input", { type: "checkbox" });
+  owned.checked = book.owned;
+  owned.addEventListener("change", () => patch(book, { owned: owned.checked }));
+  const controls = [statusSelect(book)];
+  if (book.status === "read") controls.push(ratingStars(book));
+  const dates = datesLine(book);
+  if (dates) controls.push(dates);
+  controls.push(el("label", { class: "check meta" }, owned, "I own this book"));
+  $("#detailControls").replaceChildren(...controls);
+
+  const notes = $("#detailNotes");
+  if (document.activeElement !== notes) notes.value = book.notes ?? "";
+}
+
+async function loadSynopsis(refresh) {
+  const id = detailId;
+  const box = $("#detailSynopsis");
+  box.textContent = "Loading…";
+  $("#synopsisRefresh").hidden = true;
+  try {
+    const data = await api(`/books/${id}/synopsis${refresh ? "?refresh=true" : ""}`);
+    if (id !== detailId) return; // another book was opened meanwhile
+    box.textContent = data.description || "No synopsis available for this book.";
+  } catch (err) {
+    if (id !== detailId) return;
+    box.textContent = `Couldn’t load the synopsis (${err.message}).`;
+  }
+  $("#synopsisRefresh").hidden = false;
+}
+
+function openDetail(id) {
+  const book = books.find((b) => b.id === id);
+  if (!book) return;
+  detailId = id;
+  $("#editBox").open = false;
+  fillEditForm(book);
+  $("#detailNotes").value = book.notes ?? "";
+  renderDetail();
+  loadSynopsis(false);
+  const dialog = $("#detailDialog");
+  if (!dialog.hasAttribute("open")) dialog.showModal();
+}
+
+async function saveNotes(book, text) {
+  if (!book) return;
+  text = text.trim();
+  if (text === (book.notes ?? "")) return;
+  await patch(book, { notes: text }, "Notes saved");
+}
+
+$("#detailNotes").addEventListener("blur", () => saveNotes(currentDetail(), $("#detailNotes").value));
+$("#synopsisRefresh").addEventListener("click", () => loadSynopsis(true));
+$("#detailClose").addEventListener("click", () => $("#detailDialog").close());
+$("#detailRemove").addEventListener("click", () => { const b = currentDetail(); if (b) remove(b); });
+$("#detailDialog").addEventListener("close", () => {
+  // Closing with Esc doesn't always blur the textarea first, so save here. Capture the book and
+  // text before anything else happens: another book may be opened before the save finishes.
+  const book = currentDetail();
+  const text = $("#detailNotes").value;
+  detailId = null;
+  saveNotes(book, text);
+});
+$("#editForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const book = currentDetail();
+  if (!book) return;
+  const year = $("#editYear").value.trim();
+  const ok = await patch(book, {
+    title: $("#editTitle").value.trim(),
+    subtitle: $("#editSubtitle").value.trim() || null,
+    authors: $("#editAuthors").value.split("\n").map((s) => s.trim()).filter(Boolean),
+    publisher: $("#editPublisher").value.trim() || null,
+    year: year === "" ? null : Number(year),
+    cover_url: $("#editCover").value.trim() || null,
+  }, "Details saved");
+  if (ok) { fillEditForm(currentDetail()); $("#editBox").open = false; }
+});
 
 function render() {
   if (!TABS.some(([key]) => key === view.tab)) view.tab = "all";
@@ -598,6 +793,7 @@ function syncControls() {
 }
 
 function applySearch(q) {
+  if ($("#detailDialog").hasAttribute("open")) $("#detailDialog").close();
   view.q = q;
   $("#search").value = q;
   saveView();
