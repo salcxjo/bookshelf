@@ -12,10 +12,10 @@ SEARCH_URL = "https://openlibrary.org/search.json"
 BASE_URL = "https://openlibrary.org"
 TIMEOUT = 10  # seconds
 
-# Open Library asks API users to identify themselves. Set OPENLIBRARY_CONTACT to an
-# e-mail address or URL if you make heavy use of it.
-USER_AGENT = f"Bookshelf/0.1 ({os.environ.get('OPENLIBRARY_CONTACT', 'personal library app')})"
-_HEADERS = {"User-Agent": USER_AGENT}
+def _headers() -> dict:
+    """Open Library asks API users to identify themselves. Set OPENLIBRARY_CONTACT (in .env) to
+    an e-mail address or URL if you make heavy use of it. Read per request, so .env changes apply."""
+    return {"User-Agent": f"Bookshelf/0.1 ({os.environ.get('OPENLIBRARY_CONTACT', 'personal library app')})"}
 
 
 def clean_isbn(raw: str) -> str:
@@ -39,14 +39,14 @@ def _usable_cover(url: str | None) -> str | None:
 
 
 def _get_json(url: str, params: dict | None = None) -> dict:
-    response = requests.get(url, params=params, headers=_HEADERS, timeout=TIMEOUT)
+    response = requests.get(url, params=params, headers=_headers(), timeout=TIMEOUT)
     response.raise_for_status()
     return response.json()
 
 
 def _get_json_or_none(url: str, params: dict | None = None) -> dict | None:
     """Like _get_json, but a 404 means 'no such record' and returns None."""
-    response = requests.get(url, params=params, headers=_HEADERS, timeout=TIMEOUT)
+    response = requests.get(url, params=params, headers=_headers(), timeout=TIMEOUT)
     if response.status_code == 404:
         return None
     response.raise_for_status()

@@ -471,3 +471,32 @@ def get_stats(conn: sqlite3.Connection) -> dict:
         "seconds_read": scalar("SELECT COALESCE(SUM(seconds_read), 0) FROM shelf"),
         "highlights": scalar("SELECT COUNT(*) FROM highlights"),
     }
+
+
+# --------------------------------------------------------------------------- #
+# Saved AI answers
+# --------------------------------------------------------------------------- #
+
+def get_ai_result(conn: sqlite3.Connection, book_id: int, kind: str) -> dict | None:
+    row = conn.execute(
+        "SELECT model, input_hash, result_json, created_at FROM ai_results WHERE book_id = ? AND kind = ?",
+        (book_id, kind),
+    ).fetchone()
+    if row is None:
+        return None
+    return {"model": row["model"], "input_hash": row["input_hash"], "created_at": row["created_at"],
+            "result": json.loads(row["result_json"])}
+
+
+def save_ai_result(conn: sqlite3.Connection, book_id: int, kind: str, model: str, input_hash: str, result: dict) -> None:
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO ai_results(book_id, kind, model, input_hash, result_json)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(book_id, kind) DO UPDATE SET
+                model = excluded.model, input_hash = excluded.input_hash,
+                result_json = excluded.result_json, created_at = CURRENT_TIMESTAMP
+            """,
+            (book_id, kind, model, input_hash, json.dumps(result, ensure_ascii=False)),
+        )

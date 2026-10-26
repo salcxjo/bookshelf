@@ -142,6 +142,57 @@
   .detail-actions { justify-content: space-between; margin-top: 16px; }
   .btn.danger { color: var(--danger); }
 
+  /* reading progress, highlights, kobo import, stats */
+  progress.read { height: 6px; border-radius: 3px; }
+  .highlights { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; max-height: 40vh; overflow-y: auto; }
+  .highlights blockquote {
+    margin: 0; padding-left: 12px; border-left: 3px solid var(--accent); white-space: pre-line; overflow-wrap: anywhere;
+  }
+  .highlights .note { margin-top: 4px; font-style: italic; color: var(--muted); white-space: pre-line; }
+  footer { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 20px; padding: 8px 16px calc(24px + env(safe-area-inset-bottom)); }
+  footer .link { color: var(--muted); font-size: .85rem; }
+  .report { margin: 12px 0; }
+  .report ul { list-style: none; margin: 8px 0 0; padding: 0; max-height: 35vh; overflow-y: auto; font-size: .9rem; }
+  .report li { padding: 4px 0; border-bottom: 1px solid var(--line); }
+  .report .tag { display: inline-block; min-width: 4.5em; color: var(--accent); font-size: .75rem; text-transform: uppercase; }
+  .report .tag.unchanged { color: var(--muted); }
+  .warn { color: var(--danger); font-size: .85rem; margin: 8px 0 0; }
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-top: 12px; }
+  .stat { border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
+  .stat b { display: block; font-size: 1.4rem; }
+  .bars { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; font-size: .85rem; }
+  .bars li { display: grid; grid-template-columns: 6.5em 1fr 2.5em; align-items: center; gap: 8px; }
+  .bars .bar { height: 10px; border-radius: 5px; background: var(--accent); min-width: 2px; }
+  .bars .count { text-align: right; color: var(--muted); }
+
+  /* AI */
+  .ai-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .ai-out { margin-top: 10px; }
+  .score { display: flex; align-items: center; gap: 10px; }
+  .score b { font-size: 1.4rem; min-width: 2ch; }
+  .score progress { flex: 1; height: 10px; }
+  .ai-out .headline { margin: 8px 0 2px; font-weight: 600; }
+  .ai-out p { margin: 4px 0; }
+  .ai-note { font-size: .75rem; }
+
+  /* add a book */
+  .tabs-inline { display: flex; gap: 8px; margin: 14px 0 4px; }
+  .add-options { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin: 10px 0; font-size: .9rem; color: var(--muted); }
+  .add-options select { width: auto; margin-left: 6px; }
+  .search-row { display: flex; gap: 8px; margin-top: 8px; }
+  .search-row input { flex: 1; min-width: 0; }
+  .results { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 12px; max-height: 45vh; overflow-y: auto; }
+  .result { display: flex; align-items: center; gap: 12px; }
+  .result .thumb { position: relative; flex: none; width: 44px; aspect-ratio: 2 / 3; background: var(--line); border-radius: 4px; overflow: hidden; }
+  .result .thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .result .text { flex: 1; min-width: 0; }
+  .result .t { font-weight: 600; overflow-wrap: anywhere; }
+  .result .action { flex: none; }
+  @media (max-width: 440px) {
+    header { flex-wrap: wrap; }
+    .btn { padding: 8px 13px; }
+  }
+
   /* batch import dialog */
   dialog {
     width: min(92vw, 520px); max-height: 88vh; padding: 16px; overflow-y: auto;
@@ -180,6 +231,7 @@
       Import
       <input id="files" type="file" accept="image/*" multiple hidden>
     </label>
+    <button class="btn" id="addBtn" type="button">Add</button>
   </div>
 </header>
 <section class="toolbar">
@@ -215,6 +267,10 @@
 <nav id="tabs"></nav>
 <p class="meta result-info" id="resultInfo"></p>
 <main id="grid"></main>
+<footer>
+  <button class="link" id="statsBtn" type="button">Reading stats</button>
+  <button class="link" id="koboBtn" type="button">Import from Kobo</button>
+</footer>
 <div id="toast" role="status" aria-live="polite"></div>
 
 <dialog id="detailDialog" class="detail" aria-labelledby="detailTitle">
@@ -229,6 +285,20 @@
   <h3>Synopsis</h3>
   <p class="synopsis" id="detailSynopsis" dir="auto"></p>
   <button class="link meta" id="synopsisRefresh" type="button" hidden>Look again</button>
+  <section id="aiBox" hidden>
+    <h3>AI</h3>
+    <div class="ai-actions">
+      <button class="btn" id="aiMatch" type="button">Will I like this?</button>
+      <button class="btn" id="aiSimilar" type="button">Books like this</button>
+    </div>
+    <div class="ai-out" id="aiOut" aria-live="polite"></div>
+    <p class="meta ai-note">Sends this book’s title, authors and synopsis, plus the titles, authors and star ratings of books you rated, to Google’s Gemini API
+      (never your notes or highlights). On the free tier Google may use what it receives to improve its products.</p>
+  </section>
+  <section id="highlightsBox" hidden>
+    <h3 id="highlightsTitle">Highlights</h3>
+    <ul class="highlights" id="detailHighlights"></ul>
+  </section>
   <h3>Notes</h3>
   <textarea id="detailNotes" rows="4" maxlength="5000" placeholder="Your notes about this book"></textarea>
   <details id="editBox">
@@ -246,6 +316,71 @@
   <div class="dialog-actions detail-actions">
     <button class="btn danger" id="detailRemove" type="button">Remove</button>
     <button class="btn" id="detailClose" type="button">Close</button>
+  </div>
+</dialog>
+
+<dialog id="koboDialog" class="detail" aria-labelledby="koboTitle">
+  <h2 id="koboTitle">Import from Kobo</h2>
+  <p class="meta">Connect your Kobo by USB and choose <code>KoboReader.sqlite</code> from its hidden <code>.kobo</code> folder.
+    You’ll see a preview first, and nothing changes until you press Import. Books you already have are only moved forward
+    (never from Read back to Reading), and your own dates and ratings are kept.</p>
+  <label class="field">KoboReader.sqlite <input id="koboFile" type="file" accept=".sqlite,.db,application/vnd.sqlite3,application/x-sqlite3,application/octet-stream"></label>
+  <label class="check meta"><input id="koboUnread" type="checkbox"> Also add downloaded books I haven’t opened</label>
+  <div class="report" id="koboReport" aria-live="polite"></div>
+  <div class="dialog-actions">
+    <button class="btn" id="koboClose" type="button">Close</button>
+    <button class="btn" id="koboPreview" type="button" disabled>Preview</button>
+    <button class="btn primary" id="koboApply" type="button" hidden>Import</button>
+  </div>
+</dialog>
+
+<dialog id="statsDialog" class="detail" aria-labelledby="statsTitle">
+  <h2 id="statsTitle">Reading stats</h2>
+  <div id="statsBody"></div>
+  <div class="dialog-actions"><button class="btn" id="statsClose" type="button">Close</button></div>
+</dialog>
+
+<dialog id="addDialog" class="detail" aria-labelledby="addTitle">
+  <h2 id="addTitle">Add a book</h2>
+  <div class="tabs-inline">
+    <button class="btn primary" id="addTabSearch" type="button">Search</button>
+    <button class="btn" id="addTabManual" type="button">Enter by hand</button>
+  </div>
+  <div class="add-options">
+    <label>Shelf
+      <select id="addShelf">
+        <option value="want">Want to read</option>
+        <option value="reading">Reading</option>
+        <option value="read">Read</option>
+      </select>
+    </label>
+    <label class="check"><input id="addOwned" type="checkbox" checked> I own this book</label>
+  </div>
+
+  <section id="addSearchPane">
+    <form id="searchForm" class="search-row">
+      <input id="addQuery" type="search" placeholder="Title, author or ISBN" aria-label="Search for a book" autocomplete="off" enterkeyhint="search">
+      <button class="btn primary" type="submit">Search</button>
+    </form>
+    <p class="meta" id="addHint"></p>
+    <ul class="results" id="addResults"></ul>
+  </section>
+
+  <section id="addManualPane" hidden>
+    <form class="edit-form" id="manualForm">
+      <label>Title <input id="manualTitle" type="text" required maxlength="300"></label>
+      <label>Authors (one per line) <textarea id="manualAuthors" rows="2"></textarea></label>
+      <label>Subtitle <input id="manualSubtitle" type="text" maxlength="300"></label>
+      <label>Publisher <input id="manualPublisher" type="text" maxlength="300"></label>
+      <label>Year <input id="manualYear" type="number" inputmode="numeric" min="0" max="2100"></label>
+      <label>ISBN (optional) <input id="manualIsbn" type="text" inputmode="numeric" maxlength="32"></label>
+      <label>Cover image URL (optional) <input id="manualCover" type="url" maxlength="1000" placeholder="https://…"></label>
+      <button class="btn primary" type="submit">Add book</button>
+    </form>
+  </section>
+
+  <div class="dialog-actions">
+    <button class="btn" id="addClose" type="button">Close</button>
   </div>
 </dialog>
 
@@ -385,6 +520,7 @@ async function api(path, options) {
       : typeof detail === "string" ? detail : JSON.stringify(detail);
     const err = new Error(message);
     err.status = res.status;
+    err.detail = detail; // the raw value, for structured errors such as duplicate warnings
     throw err;
   }
   return res.status === 204 ? null : res.json();
@@ -470,6 +606,22 @@ function ratingStars(book) {
   return stars;
 }
 
+function progressBar(book) {
+  const bar = el("progress", { class: "read", max: "100", value: String(book.percent_read), "aria-label": "Reading progress" });
+  return el("div", {}, bar, el("div", { class: "meta", text: `${book.percent_read}% read` }));
+}
+
+function readingSummary(book) {
+  const parts = [];
+  if (book.percent_read != null && book.status !== "want") parts.push(`${book.percent_read}% read`);
+  if (book.seconds_read) {
+    const hours = Math.floor(book.seconds_read / 3600), minutes = Math.round((book.seconds_read % 3600) / 60);
+    parts.push(hours ? `${hours} h ${minutes} min reading` : `${minutes} min reading`);
+  }
+  if (book.last_read_on) parts.push(`last read ${book.last_read_on}`);
+  return parts.length ? el("div", { class: "meta", text: parts.join(" · ") }) : null;
+}
+
 function datesLine(book) {
   if (book.finished_on) return el("div", { class: "meta", text: `Finished ${book.finished_on}` });
   if (book.started_on) return el("div", { class: "meta", text: `Started ${book.started_on}` });
@@ -487,6 +639,7 @@ function card(book) {
   const dates = datesLine(book);
   if (dates) info.append(dates);
   if (!book.owned) info.append(el("span", { class: "badge", text: "Wishlist" }));
+  if (book.status === "reading" && book.percent_read != null) info.append(progressBar(book));
   if (book.status === "read") info.append(ratingStars(book));
   info.append(el("button", { class: "del", text: "Remove", onclick: () => remove(book) }));
   return el("article", { class: "card" }, cover, info);
@@ -527,6 +680,8 @@ function renderDetail() {
   if (book.status === "read") controls.push(ratingStars(book));
   const dates = datesLine(book);
   if (dates) controls.push(dates);
+  const summary = readingSummary(book);
+  if (summary) controls.push(summary);
   controls.push(el("label", { class: "check meta" }, owned, "I own this book"));
   $("#detailControls").replaceChildren(...controls);
 
@@ -550,6 +705,79 @@ async function loadSynopsis(refresh) {
   $("#synopsisRefresh").hidden = false;
 }
 
+async function loadHighlights() {
+  const id = detailId;
+  $("#highlightsBox").hidden = true;
+  try {
+    const items = await api(`/books/${id}/highlights`);
+    if (id !== detailId || !items.length) return;
+    $("#highlightsTitle").textContent = `Highlights (${items.length})`;
+    $("#detailHighlights").replaceChildren(...items.map((h) => {
+      const li = el("li", {});
+      if (h.text) li.append(el("blockquote", { dir: "auto", text: h.text }));
+      if (h.note) li.append(el("div", { class: "note", dir: "auto", text: h.note }));
+      const where = [h.chapter, h.created_on].filter(Boolean).join(" · ");
+      if (where) li.append(el("div", { class: "meta", dir: "auto", text: where }));
+      return li;
+    }));
+    $("#highlightsBox").hidden = false;
+  } catch { /* highlights are a bonus; the dialog works without them */ }
+}
+
+// ---------------------------------------------------------------- AI (optional)
+
+let aiStatus = { enabled: false };
+
+function matchView(data) {
+  const nodes = [
+    el("div", { class: "score" }, el("b", { text: String(data.score) }),
+      el("progress", { max: "100", value: String(data.score), "aria-label": "Match score" })),
+    el("div", { class: "headline", dir: "auto", text: data.headline }),
+    el("p", { dir: "auto", text: data.why }),
+  ];
+  nodes.push(aiFooter(data, "match"));
+  return nodes;
+}
+
+function similarView(data) {
+  const nodes = [];
+  if (data.books.length) {
+    nodes.push(el("ul", { class: "results" }, ...data.books.map((b) => resultRow(b, {
+      label: "Want to read", post: { status: "want", owned: false }, note: b.why,
+    }))));
+  } else {
+    nodes.push(el("p", { class: "meta", text: "None of the suggestions could be matched to a real book." }));
+  }
+  if (data.dropped) nodes.push(el("p", { class: "meta", text: `${data.dropped} suggestion(s) couldn’t be matched to a real book and were left out.` }));
+  nodes.push(aiFooter(data, "similar"));
+  return nodes;
+}
+
+function aiFooter(data, kind) {
+  return el("p", { class: "meta ai-note" }, data.cached ? "Saved answer. " : "",
+    el("button", { class: "link", type: "button", text: "Ask again", onclick: () => runAi(kind, true) }));
+}
+
+async function runAi(kind, refresh = false) {
+  const id = detailId;
+  const buttons = [$("#aiMatch"), $("#aiSimilar")];
+  buttons.forEach((b) => { b.disabled = true; });
+  $("#aiOut").textContent = kind === "match" ? "Comparing with your ratings…" : "Finding books and checking that they exist…";
+  try {
+    const data = await api(`/books/${id}/ai/${kind}${refresh ? "?refresh=true" : ""}`, { method: "POST" });
+    if (id !== detailId) return;
+    $("#aiOut").replaceChildren(...(kind === "match" ? matchView(data) : similarView(data)));
+  } catch (err) {
+    if (id !== detailId) return;
+    $("#aiOut").replaceChildren(el("p", { class: "warn", text: err.message }));
+  } finally {
+    buttons.forEach((b) => { b.disabled = false; });
+  }
+}
+
+$("#aiMatch").addEventListener("click", () => runAi("match"));
+$("#aiSimilar").addEventListener("click", () => runAi("similar"));
+
 function openDetail(id) {
   const book = books.find((b) => b.id === id);
   if (!book) return;
@@ -558,7 +786,10 @@ function openDetail(id) {
   fillEditForm(book);
   $("#detailNotes").value = book.notes ?? "";
   renderDetail();
+  $("#aiBox").hidden = !aiStatus.enabled;
+  $("#aiOut").replaceChildren();
   loadSynopsis(false);
+  loadHighlights();
   const dialog = $("#detailDialog");
   if (!dialog.hasAttribute("open")) dialog.showModal();
 }
@@ -622,7 +853,7 @@ function render() {
   $("#filtersSummary").textContent = n ? `Filters (${n})` : "Filters";
 
   const empty = !books.length
-    ? "No books yet. Tap “Scan” or “Import” to add your first."
+    ? "No books yet. Tap “Scan”, “Import” or “Add” to add your first."
     : filtering ? "No books match your search or filters." : "Nothing on this shelf yet.";
   $("#grid").replaceChildren(...(shown.length ? shown.map(card) : [el("p", { class: "empty", text: empty })]));
 }
@@ -781,6 +1012,251 @@ $("#importDialog").addEventListener("cancel", (event) => {
   if (importState.running) event.preventDefault(); // Esc shouldn't abandon a running import
 });
 
+// ---------------------------------------------------------------- Kobo import
+
+let koboPreviewed = false;
+
+function koboQuery(apply) {
+  return `/import/kobo?apply=${apply}&include_unread=${$("#koboUnread").checked}`;
+}
+
+function renderKoboReport(report) {
+  const c = report.counts;
+  const lines = [
+    report.applied ? "Imported." : "Preview, nothing has been changed yet.",
+    `${c.create} new · ${c.update} updated · ${c.unchanged} unchanged · ${c.highlights_new} highlights to add`,
+  ];
+  if (c.duplicates_merged) lines.push(`${c.duplicates_merged} duplicate copies merged`);
+  if (c.skipped_unread) lines.push(`${c.skipped_unread} unopened books left out`);
+  const box = $("#koboReport");
+  box.replaceChildren(...lines.map((text, i) => el("div", { class: i ? "meta" : "", text })));
+  const changed = report.items.filter((item) => item.action !== "unchanged");
+  if (changed.length) {
+    box.append(el("ul", {}, ...changed.map((item) => el("li", { dir: "auto" },
+      el("span", { class: "tag", text: item.action }),
+      `${item.title}${item.authors.length ? " — " + item.authors.join(", ") : ""}`,
+      item.changes.length ? el("div", { class: "meta", text: item.changes.join("; ") }) : "",
+    ))));
+  }
+  for (const warning of report.warnings) box.append(el("p", { class: "warn", text: warning }));
+}
+
+async function runKobo(apply) {
+  const file = $("#koboFile").files[0];
+  if (!file) return;
+  const form = new FormData();
+  form.append("file", file);
+  $("#koboPreview").disabled = true;
+  $("#koboApply").disabled = true;
+  $("#koboReport").textContent = apply ? "Importing…" : "Reading the file…";
+  try {
+    const report = await api(koboQuery(apply), { method: "POST", body: form });
+    renderKoboReport(report);
+    koboPreviewed = !apply;
+    $("#koboApply").hidden = apply || !(report.counts.create || report.counts.update);
+    if (apply) { await load(); toast("Kobo import finished"); }
+  } catch (err) {
+    $("#koboReport").replaceChildren(el("p", { class: "warn", text: err.message }));
+    $("#koboApply").hidden = true;
+  } finally {
+    $("#koboPreview").disabled = false;
+    $("#koboApply").disabled = false;
+  }
+}
+
+function resetKobo() {
+  koboPreviewed = false;
+  $("#koboReport").replaceChildren();
+  $("#koboApply").hidden = true;
+  $("#koboPreview").disabled = !$("#koboFile").files.length;
+}
+
+$("#koboBtn").addEventListener("click", () => {
+  $("#koboFile").value = "";
+  resetKobo();
+  $("#koboDialog").showModal();
+});
+$("#koboFile").addEventListener("change", resetKobo);
+$("#koboUnread").addEventListener("change", resetKobo);   // a different choice needs a fresh preview
+$("#koboPreview").addEventListener("click", () => runKobo(false));
+$("#koboApply").addEventListener("click", () => { if (koboPreviewed) runKobo(true); });
+$("#koboClose").addEventListener("click", () => $("#koboDialog").close());
+
+// ---------------------------------------------------------------- stats
+
+function barList(rows, labelOf, countOf) {
+  const max = Math.max(1, ...rows.map(countOf));
+  return el("ul", { class: "bars" }, ...rows.map((row) => el("li", { dir: "auto" },
+    el("span", { text: labelOf(row) }),
+    el("span", { class: "bar", style: `width: ${Math.round((countOf(row) / max) * 100)}%` }),
+    el("span", { class: "count", text: String(countOf(row)) }),
+  )));
+}
+
+function renderStats(s) {
+  const hours = Math.round(s.seconds_read / 3600);
+  const tiles = [
+    ["Books", s.books], ["Read", s.by_status.read], ["Reading", s.by_status.reading], ["Want to read", s.by_status.want],
+    ["Wishlist", s.wishlist], ["Average rating", s.average_rating ?? "—"], ["Hours read (Kobo)", hours], ["Highlights", s.highlights],
+  ].map(([label, value]) => el("div", { class: "stat" }, el("b", { text: String(value) }), el("span", { class: "meta", text: label })));
+  const body = [el("div", { class: "stat-grid" }, ...tiles)];
+
+  const section = (title, node) => body.push(el("h3", { text: title }), node);
+  if (s.finished_per_year.length) {
+    section("Books finished per year", barList(s.finished_per_year, (r) => r.year, (r) => r.count));
+    if (s.finished_without_date) body.push(el("p", { class: "meta", text: `${s.finished_without_date} read book(s) have no finish date and aren’t counted here.` }));
+  }
+  if (Object.values(s.ratings).some(Boolean)) {
+    section("Ratings", barList(Object.entries(s.ratings).reverse(), ([stars]) => "★".repeat(Number(stars)), ([, n]) => n));
+  }
+  if (s.top_authors.length) section("Most-owned authors", barList(s.top_authors, (r) => r.name, (r) => r.count));
+  if (!s.books) body.push(el("p", { class: "meta", text: "Nothing to show yet. Add a few books first." }));
+  $("#statsBody").replaceChildren(...body);
+}
+
+$("#statsBtn").addEventListener("click", async () => {
+  $("#statsBody").textContent = "Loading…";
+  $("#statsDialog").showModal();
+  try { renderStats(await api("/stats")); }
+  catch (err) { $("#statsBody").textContent = `Couldn’t load the stats (${err.message}).`; }
+});
+$("#statsClose").addEventListener("click", () => $("#statsDialog").close());
+
+// ---------------------------------------------------------------- add a book (search or by hand)
+
+function setAddTab(name) {
+  const search = name === "search";
+  $("#addSearchPane").hidden = !search;
+  $("#addManualPane").hidden = search;
+  $("#addTabSearch").classList.toggle("primary", search);
+  $("#addTabManual").classList.toggle("primary", !search);
+}
+
+function openAdd() {
+  $("#addShelf").value = view.tab === "all" ? "want" : view.tab;
+  $("#addOwned").checked = true;
+  setAddTab("search");
+  const dialog = $("#addDialog");
+  if (!dialog.hasAttribute("open")) dialog.showModal();
+  $("#addQuery").focus();
+}
+
+// POST /books. Returns the stored book, or null when nothing was added (the reason is toasted).
+async function postBook(payload, source, force = false, options = {}) {
+  const body = { ...payload, source, force, status: options.status ?? $("#addShelf").value, owned: options.owned ?? $("#addOwned").checked };
+  try {
+    return await api("/books", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    const info = err.status === 409 && err.detail && typeof err.detail === "object" ? err.detail : null;
+    if (info && info.can_force && !force && confirm(`You already have “${info.book.title}”. Add this one anyway?`)) {
+      return postBook(payload, source, true, options);
+    }
+    toast(info ? info.message : err.message, true);
+    return null;
+  }
+}
+
+const candidateFields = (c) => ({
+  title: c.title, authors: c.authors, subtitle: c.subtitle ?? null, publisher: c.publisher ?? null,
+  year: c.year ?? null, isbn: c.isbn ?? null, cover_url: c.cover_url ?? null, work_key: c.work_key ?? null,
+});
+
+// options: { label, post: {status, owned}, note } let other lists (e.g. AI suggestions) reuse this row
+function resultRow(candidate, { label = "Add", post = {}, note = "" } = {}) {
+  const thumb = el("div", { class: "thumb" });
+  if (candidate.cover_url) {
+    const img = el("img", { src: candidate.cover_url, alt: "", loading: "lazy", referrerpolicy: "no-referrer" });
+    img.addEventListener("error", () => img.remove());
+    thumb.append(img);
+  }
+  const byline = [candidate.authors.join(", "), candidate.year].filter(Boolean).join(" · ");
+  const action = el("div", { class: "action" });
+  const row = el("li", { class: "result" }, thumb,
+    el("div", { class: "text" },
+      el("div", { class: "t", dir: "auto", text: candidate.title }),
+      el("div", { class: "meta", dir: "auto", text: byline }),
+      note ? el("div", { class: "meta", dir: "auto", text: note }) : ""),
+    action);
+
+  if (candidate.in_library) {
+    action.append(el("span", { class: "meta", text: "In library" }));
+  } else {
+    const button = el("button", { class: "btn", type: "button", text: label });
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      const book = await postBook(candidateFields(candidate), "search", false, post);
+      if (!book) { button.disabled = false; return; }
+      action.replaceChildren(el("span", { class: "meta", text: "Added ✓" }));
+      toast(`Added: ${book.title}`);
+      await load();
+    });
+    action.append(button);
+  }
+  return row;
+}
+
+function enterByHand(prefill = {}) {
+  $("#manualTitle").value = prefill.title ?? "";
+  $("#manualIsbn").value = prefill.isbn ?? "";
+  setAddTab("manual");
+  $("#manualTitle").focus();
+}
+
+$("#searchForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const q = $("#addQuery").value.trim();
+  if (!q) return;
+  const button = $("#searchForm button");
+  button.disabled = true;
+  $("#addResults").replaceChildren();
+  $("#addHint").textContent = "Searching…";
+  try {
+    const data = await api(`/search?q=${encodeURIComponent(q)}`);
+    $("#addResults").replaceChildren(...data.results.map(resultRow));
+    if (data.results.length) {
+      $("#addHint").textContent = data.kind === "isbn" ? `Found by ISBN ${data.isbn}.` : `${data.results.length} results.`;
+    } else {
+      const message = data.kind === "isbn" ? `Open Library doesn’t know ISBN ${data.isbn}. ` : "No matches. Try fewer words, or ";
+      const prefill = data.kind === "isbn" ? { isbn: data.isbn } : { title: q };
+      $("#addHint").replaceChildren(message, el("button", {
+        class: "link", type: "button", text: "enter it by hand", onclick: () => enterByHand(prefill),
+      }), ".");
+    }
+  } catch (err) {
+    $("#addHint").textContent = `Search failed: ${err.message}`;
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$("#manualForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const year = $("#manualYear").value.trim();
+  const book = await postBook({
+    title: $("#manualTitle").value.trim(),
+    authors: $("#manualAuthors").value.split("\n").map((s) => s.trim()).filter(Boolean),
+    subtitle: $("#manualSubtitle").value.trim() || null,
+    publisher: $("#manualPublisher").value.trim() || null,
+    year: year === "" ? null : Number(year),
+    isbn: $("#manualIsbn").value.trim() || null,
+    cover_url: $("#manualCover").value.trim() || null,
+  }, "manual");
+  if (!book) return;
+  event.target.reset();
+  toast(`Added: ${book.title}`);
+  await load();
+  $("#manualTitle").focus(); // ready for the next one
+});
+
+$("#addBtn").addEventListener("click", openAdd);
+$("#addTabSearch").addEventListener("click", () => setAddTab("search"));
+$("#addTabManual").addEventListener("click", () => setAddTab("manual"));
+$("#addClose").addEventListener("click", () => $("#addDialog").close());
+
 // ---------------------------------------------------------------- search, sort, filters
 
 function syncControls() {
@@ -820,6 +1296,7 @@ $("#clearFilters").addEventListener("click", () => {
 
 syncControls();
 load().catch((err) => toast(err.message, true));
+api("/ai/status").then((status) => { aiStatus = status; }).catch(() => { /* older server or offline: AI stays hidden */ });
 </script>
 </body>
 </html>
