@@ -24,7 +24,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from bookshelf.db import repo
+from db import repo
 from bookshelf.isbn import normalize_isbn
 from bookshelf.textnorm import norm
 

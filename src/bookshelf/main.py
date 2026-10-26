@@ -12,12 +12,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from bookshelf import llm, taste
-from bookshelf.db import repo
-from bookshelf.db.migrate import migrate
+from db import repo
+from db.migrate import migrate
 from bookshelf.importers.kobo import KoboFormatError, apply_plan, plan_import, read_kobo
 from bookshelf.isbn import normalize_isbn
-from bookshelf.lookup.openlibrary import fetch_by_isbn, fetch_description, search_works
-from bookshelf.vision.barcode import decode_isbn_from_bytes
+from lookup.openlibrary import fetch_by_isbn, fetch_description, search_works
+from vision.barcode import decode_isbn_from_bytes
 
 load_dotenv()  # reads .env (GEMINI_API_KEY and friends) if there is one; real environment variables win
 

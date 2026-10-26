@@ -14,8 +14,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pydantic import BaseModel, Field, ValidationError
 
 from bookshelf import llm
-from bookshelf.db import repo
-from bookshelf.lookup.openlibrary import search_works
+from db import repo
+from lookup.openlibrary import search_works
 from bookshelf.textnorm import norm
 
 MIN_RATED = 5          # fewer rated books than this and a taste score would be noise

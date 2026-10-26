@@ -3,7 +3,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from bookshelf.db.migrate import migrate
+from db.migrate import migrate
 from bookshelf.textnorm import norm
 
 STATUSES = ("want", "reading", "read")
