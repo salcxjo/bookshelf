@@ -9,9 +9,10 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Response, UploadFile
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from bookshelf.db import repo
+from db import repo
 from bookshelf.db.migrate import migrate
-from bookshelf.lookup.openlibrary import fetch_by_isbn, fetch_description
+from bookshelf.isbn import normalize_isbn
+from bookshelf.lookup.openlibrary import fetch_by_isbn, fetch_description, search_works
 from bookshelf.vision.barcode import decode_isbn_from_bytes
 
 # src/bookshelf/main.py -> parents[2] is the repo root. Override with BOOKSHELF_DB.
@@ -64,6 +65,23 @@ class BookUpdate(BaseModel):
     owned: bool | None = None
 
 
+class NewBook(BaseModel):
+    """Body of POST /books: a search result, or a book typed in by hand."""
+
+    title: str = Field(min_length=1, max_length=300)
+    authors: list[str] = Field(default_factory=list, max_length=20)
+    subtitle: str | None = Field(default=None, max_length=300)
+    publisher: str | None = Field(default=None, max_length=300)
+    year: int | None = Field(default=None, ge=0, le=2100)
+    isbn: str | None = Field(default=None, max_length=32)
+    cover_url: str | None = Field(default=None, max_length=1000, pattern=r"^https?://")
+    work_key: str | None = Field(default=None, pattern=r"^OL\d+W$")
+    source: Literal["search", "manual"] = "manual"
+    status: Literal["want", "reading", "read"] = "want"
+    owned: bool = True
+    force: bool = False  # add even though a book with the same title/work already exists
+
+
 @app.get("/health")
 def health():
     return {"ok": True}
@@ -78,6 +96,81 @@ def lookup(isbn: str):
     if book is None:
         raise HTTPException(status_code=404, detail="Book not found")
     return book
+
+
+@app.get("/search")
+def search(
+    q: str | None = None,
+    title: str | None = None,
+    author: str | None = None,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Find books to add. `q` may be an ISBN (10 or 13 digits, hyphens allowed) or free text
+    such as a title and/or an author; `title` and `author` search those fields specifically.
+    Each result says whether the library already has it (`in_library` = book id or null)."""
+    q = (q or "").strip()
+    if not (q or (title or "").strip() or (author or "").strip()):
+        raise HTTPException(status_code=422, detail="type a title, an author or an ISBN")
+
+    isbn = normalize_isbn(q) if q else None
+    try:
+        if isbn:
+            found = fetch_by_isbn(isbn)
+            results = [{**found, "work_key": None, "edition_count": None}] if found else []
+        else:
+            results = search_works(q=q or None, title=(title or "").strip() or None,
+                                   author=(author or "").strip() or None, limit=12)
+    except requests.RequestException:
+        raise HTTPException(status_code=502, detail="Open Library lookup failed")
+
+    index = repo.library_index(conn)
+    for result in results:
+        hit = repo.match_in_index(index, isbn=result.get("isbn"), work_key=result.get("work_key"),
+                                  title=result["title"], authors=result["authors"])
+        result["in_library"] = hit[0] if hit else None
+    return {"kind": "isbn" if isbn else "text", "isbn": isbn, "results": results}
+
+
+@app.post("/books", status_code=status.HTTP_201_CREATED)
+def add_book(new: NewBook, conn: sqlite3.Connection = Depends(get_db)):
+    """Add a book from a search result or by hand. 409 means it looks like a duplicate;
+    `detail.can_force` says whether sending `force: true` can override that."""
+    isbn = None
+    if new.isbn and new.isbn.strip():
+        isbn = normalize_isbn(new.isbn)
+        if isbn is None:
+            raise HTTPException(status_code=422, detail="That isn’t a valid ISBN")
+
+    hit = repo.find_duplicate(conn, isbn=isbn, work_key=new.work_key, title=new.title, authors=new.authors)
+    if hit is not None and (hit[1] == "isbn" or not new.force):
+        existing, reason = hit
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "message": f"Already in the library: {existing['title']}",
+            "reason": reason, "book": existing, "can_force": reason != "isbn",
+        })
+
+    data = new.model_dump(exclude={"force", "status"})
+    data["isbn"] = isbn
+    if new.source == "search" and isbn:
+        # Search results only know a little; fill the gaps from the edition record (best effort)
+        try:
+            edition = fetch_by_isbn(isbn) or {}
+        except requests.RequestException:
+            edition = {}
+        for key in ("subtitle", "publisher", "year", "cover_url"):
+            blank = data.get(key) is None or (isinstance(data[key], str) and not data[key].strip())
+            if blank and edition.get(key):
+                data[key] = edition[key]
+
+    try:
+        book_id = repo.add_book(conn, data)
+    except ValueError as exc:  # e.g. a title that is only spaces
+        raise HTTPException(status_code=422, detail=str(exc))
+    except repo.DuplicateBookError:  # lost a race with another request
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "message": "Already in the library", "reason": "isbn", "book": repo.get_book_by_isbn(conn, isbn), "can_force": False})
+    repo.set_status(conn, book_id, new.status)
+    return repo.get_book_by_id(conn, book_id)
 
 
 @app.get("/books")
