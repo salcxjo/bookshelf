@@ -6,16 +6,20 @@ from pathlib import Path
 from typing import Literal
 
 import requests
+from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Query, Response, UploadFile, status
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from bookshelf import llm, taste
 from bookshelf.db import repo
 from bookshelf.db.migrate import migrate
 from bookshelf.importers.kobo import KoboFormatError, apply_plan, plan_import, read_kobo
 from bookshelf.isbn import normalize_isbn
 from bookshelf.lookup.openlibrary import fetch_by_isbn, fetch_description, search_works
 from bookshelf.vision.barcode import decode_isbn_from_bytes
+
+load_dotenv()  # reads .env (GEMINI_API_KEY and friends) if there is one; real environment variables win
 
 # src/bookshelf/main.py -> parents[2] is the repo root. Override with BOOKSHELF_DB.
 DB_PATH = Path(
@@ -251,6 +255,71 @@ def book_highlights(book_id: int, conn: sqlite3.Connection = Depends(get_db)):
     if repo.get_book_by_id(conn, book_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
     return repo.list_highlights(conn, book_id)
+
+
+# --------------------------------------------------------------------------- #
+# AI (optional; needs GEMINI_API_KEY)
+# --------------------------------------------------------------------------- #
+
+def _ai_book(conn: sqlite3.Connection, book_id: int) -> dict:
+    book = repo.get_book_by_id(conn, book_id, include_description=True)
+    if book is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+    if not llm.is_configured():
+        raise HTTPException(status_code=503, detail="AI features are off. Put GEMINI_API_KEY in .env and restart the server.")
+    return book
+
+
+def _ask_model(function, *args):
+    """Run a taste/LLM function, turning its failures into sensible HTTP errors."""
+    try:
+        return function(*args)
+    except taste.NotEnoughRatings as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except llm.LLMNotConfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except llm.LLMRateLimited as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
+    except llm.LLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.get("/ai/status")
+def ai_status():
+    """Lets the page decide whether to show the AI buttons."""
+    on = llm.is_configured()
+    return {"enabled": on, "model": llm.model_name() if on else None, "min_rated": taste.MIN_RATED}
+
+
+@app.post("/books/{book_id}/ai/match")
+def ai_match(book_id: int, refresh: bool = False, conn: sqlite3.Connection = Depends(get_db)):
+    """How well does this book fit the taste shown by your ratings? Saved until your ratings
+    or the book's details change; ?refresh=true asks again."""
+    book = _ai_book(conn, book_id)
+    profile = _ask_model(taste.taste_profile, conn, book_id)
+    key = taste.match_key(profile, book)
+    saved = repo.get_ai_result(conn, book_id, "match")
+    if saved and saved["input_hash"] == key and not refresh:
+        return {**saved["result"], "cached": True, "created_at": saved["created_at"]}
+    result = _ask_model(taste.score_book, book, profile)
+    repo.save_ai_result(conn, book_id, "match", llm.model_name(), key, result)
+    return {**result, "cached": False, "created_at": None}
+
+
+@app.post("/books/{book_id}/ai/similar")
+def ai_similar(book_id: int, refresh: bool = False, conn: sqlite3.Connection = Depends(get_db)):
+    """Up to five books like this one. Every suggestion has been checked against Open Library,
+    so none of them is an invented title."""
+    book = _ai_book(conn, book_id)
+    key = taste.similar_key(book)
+    saved = repo.get_ai_result(conn, book_id, "similar")
+    cached = bool(saved and saved["input_hash"] == key and not refresh)
+    if cached:
+        data = saved["result"]
+    else:
+        data = _ask_model(taste.similar_books, book)
+        repo.save_ai_result(conn, book_id, "similar", llm.model_name(), key, data)
+    return {"books": taste.mark_in_library(conn, data["books"]), "dropped": data["dropped"], "cached": cached}
 
 
 @app.get("/stats")
