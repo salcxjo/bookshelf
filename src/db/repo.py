@@ -45,8 +45,9 @@ def init_db(conn: sqlite3.Connection) -> None:
 _SELECT = """
     SELECT b.id, b.isbn, b.title, b.subtitle, b.publisher, b.year, b.cover_url,
            {description}
-           b.work_key, b.source, b.owned,
+           b.work_key, b.source, b.owned, b.kobo_id,
            s.status, s.rating, s.started_on, s.finished_on, s.notes,
+           s.percent_read, s.seconds_read, s.last_read_on,
            (SELECT json_group_array(name) FROM (
                 SELECT a.name AS name
                 FROM book_authors ba
@@ -162,7 +163,7 @@ def _clean_text(value) -> str | None:
     return value.strip() or None
 
 
-def _clean_names(names) -> list[str]:
+def clean_names(names) -> list[str]:
     """Strip author names, drop blanks and repeats, keep the order."""
     if not isinstance(names, (list, tuple)):
         raise ValueError("authors must be a list of names")
@@ -175,7 +176,7 @@ def _clean_names(names) -> list[str]:
     return result
 
 
-def _link_authors(conn: sqlite3.Connection, book_id: int, names: list[str]) -> None:
+def link_authors(conn: sqlite3.Connection, book_id: int, names: list[str]) -> None:
     for name in names:
         conn.execute("INSERT OR IGNORE INTO authors(name) VALUES (?)", (name,))
         author_id = conn.execute("SELECT id FROM authors WHERE name = ?", (name,)).fetchone()["id"]
@@ -229,7 +230,7 @@ def add_book(conn: sqlite3.Connection, book: dict) -> int:
                 raise DuplicateBookError(book.get("isbn")) from exc
             raise
         book_id = cursor.lastrowid
-        _link_authors(conn, book_id, _clean_names(book.get("authors", [])))
+        link_authors(conn, book_id, clean_names(book.get("authors", [])))
 
     return book_id
 
@@ -276,7 +277,7 @@ def update_book(conn: sqlite3.Connection, book_id: int, changes: dict) -> bool:
         if not isinstance(changes["owned"], bool):
             raise ValueError("owned must be true or false")
         columns["owned"] = int(changes["owned"])
-    names = _clean_names(changes["authors"]) if "authors" in changes else None
+    names = clean_names(changes["authors"]) if "authors" in changes else None
 
     with conn:
         if conn.execute("SELECT 1 FROM books WHERE id = ?", (book_id,)).fetchone() is None:
@@ -286,7 +287,7 @@ def update_book(conn: sqlite3.Connection, book_id: int, changes: dict) -> bool:
             conn.execute(f"UPDATE books SET {assignments} WHERE id = ?", (*columns.values(), book_id))
         if names is not None:
             conn.execute("DELETE FROM book_authors WHERE book_id = ?", (book_id,))
-            _link_authors(conn, book_id, names)
+            link_authors(conn, book_id, names)
             _drop_orphan_authors(conn)
     return True
 
@@ -393,3 +394,80 @@ def delete_book(conn: sqlite3.Connection, book_id: int) -> bool:
             return False
         _drop_orphan_authors(conn)  # authors that no longer have any book
     return True
+
+
+# --------------------------------------------------------------------------- #
+# Highlights
+# --------------------------------------------------------------------------- #
+
+def list_highlights(conn: sqlite3.Connection, book_id: int) -> list[dict]:
+    """A book's highlights in the order they were made."""
+    rows = conn.execute(
+        """
+        SELECT id, text, note, chapter, created_on
+        FROM highlights
+        WHERE book_id = ?
+        ORDER BY created_on, id
+        """,
+        (book_id,),
+    )
+    return [dict(r) for r in rows]
+
+
+# --------------------------------------------------------------------------- #
+# Statistics
+# --------------------------------------------------------------------------- #
+
+def get_stats(conn: sqlite3.Connection) -> dict:
+    """Numbers for the stats page: counts, books finished per year, ratings, top authors."""
+    scalar = lambda sql: conn.execute(sql).fetchone()[0]
+
+    by_status = {status: 0 for status in STATUSES}
+    for row in conn.execute("SELECT status, COUNT(*) AS n FROM shelf GROUP BY status"):
+        by_status[row["status"]] = row["n"]
+
+    ratings = {str(stars): 0 for stars in range(1, 6)}
+    for row in conn.execute("SELECT rating, COUNT(*) AS n FROM shelf WHERE rating IS NOT NULL GROUP BY rating"):
+        ratings[str(row["rating"])] = row["n"]
+
+    per_year = [
+        {"year": row["year"], "count": row["n"]}
+        for row in conn.execute(
+            """
+            SELECT substr(finished_on, 1, 4) AS year, COUNT(*) AS n
+            FROM shelf
+            WHERE status = 'read' AND finished_on IS NOT NULL
+            GROUP BY year
+            ORDER BY year
+            """
+        )
+    ]
+
+    top_authors = [
+        {"name": row["name"], "count": row["n"]}
+        for row in conn.execute(
+            """
+            SELECT a.name, COUNT(*) AS n
+            FROM authors a
+            JOIN book_authors ba ON ba.author_id = a.id
+            GROUP BY a.id
+            ORDER BY n DESC, a.name
+            LIMIT 8
+            """
+        )
+    ]
+
+    average = scalar("SELECT AVG(rating) FROM shelf WHERE rating IS NOT NULL")
+    return {
+        "books": scalar("SELECT COUNT(*) FROM books"),
+        "owned": scalar("SELECT COUNT(*) FROM books WHERE owned = 1"),
+        "wishlist": scalar("SELECT COUNT(*) FROM books WHERE owned = 0"),
+        "by_status": by_status,
+        "finished_per_year": per_year,
+        "finished_without_date": scalar("SELECT COUNT(*) FROM shelf WHERE status = 'read' AND finished_on IS NULL"),
+        "ratings": ratings,
+        "average_rating": round(average, 2) if average is not None else None,
+        "top_authors": top_authors,
+        "seconds_read": scalar("SELECT COALESCE(SUM(seconds_read), 0) FROM shelf"),
+        "highlights": scalar("SELECT COUNT(*) FROM highlights"),
+    }

@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -9,8 +10,9 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Response, UploadFile
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from db import repo
+from bookshelf.db import repo
 from bookshelf.db.migrate import migrate
+from bookshelf.importers.kobo import KoboFormatError, apply_plan, plan_import, read_kobo
 from bookshelf.isbn import normalize_isbn
 from bookshelf.lookup.openlibrary import fetch_by_isbn, fetch_description, search_works
 from bookshelf.vision.barcode import decode_isbn_from_bytes
@@ -21,6 +23,7 @@ DB_PATH = Path(
 )
 WEB_DIR = Path(__file__).resolve().parents[2] / "web"   # the page served at /
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # phone photos are usually 2-10 MB
+MAX_KOBO_BYTES = 500 * 1024 * 1024  # KoboReader.sqlite is usually a few MB to a few tens of MB
 
 
 
@@ -241,6 +244,47 @@ def update_book(book_id: int, update: BookUpdate, conn: sqlite3.Connection = Dep
     if not found:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
     return repo.get_book_by_id(conn, book_id)
+
+
+@app.get("/books/{book_id}/highlights")
+def book_highlights(book_id: int, conn: sqlite3.Connection = Depends(get_db)):
+    if repo.get_book_by_id(conn, book_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+    return repo.list_highlights(conn, book_id)
+
+
+@app.get("/stats")
+def stats(conn: sqlite3.Connection = Depends(get_db)):
+    return repo.get_stats(conn)
+
+
+@app.post("/import/kobo")
+def import_kobo(
+    file: UploadFile,
+    apply: bool = False,
+    include_unread: bool = False,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Upload a KoboReader.sqlite. By default this only previews what would change;
+    send ?apply=true to import. Books you already have are only ever moved forward."""
+    with tempfile.TemporaryDirectory() as folder:
+        path = os.path.join(folder, "KoboReader.sqlite")
+        size = 0
+        with open(path, "wb") as out:
+            while chunk := file.file.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_KOBO_BYTES:
+                    raise HTTPException(status_code=413, detail="that file is too large to be a KoboReader.sqlite")
+                out.write(chunk)
+        try:
+            data = read_kobo(path, include_unread=include_unread)
+        except KoboFormatError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    plan = plan_import(conn, data)
+    report = apply_plan(conn, plan) if apply else plan["report"]
+    report["items"] = report["items"][:1000]  # plenty for a preview
+    return report
 
 
 @app.delete("/books/{book_id}", status_code=status.HTTP_204_NO_CONTENT)
