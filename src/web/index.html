@@ -142,6 +142,24 @@
   .detail-actions { justify-content: space-between; margin-top: 16px; }
   .btn.danger { color: var(--danger); }
 
+  /* add a book */
+  .tabs-inline { display: flex; gap: 8px; margin: 14px 0 4px; }
+  .add-options { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin: 10px 0; font-size: .9rem; color: var(--muted); }
+  .add-options select { width: auto; margin-left: 6px; }
+  .search-row { display: flex; gap: 8px; margin-top: 8px; }
+  .search-row input { flex: 1; min-width: 0; }
+  .results { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 12px; max-height: 45vh; overflow-y: auto; }
+  .result { display: flex; align-items: center; gap: 12px; }
+  .result .thumb { position: relative; flex: none; width: 44px; aspect-ratio: 2 / 3; background: var(--line); border-radius: 4px; overflow: hidden; }
+  .result .thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .result .text { flex: 1; min-width: 0; }
+  .result .t { font-weight: 600; overflow-wrap: anywhere; }
+  .result .action { flex: none; }
+  @media (max-width: 440px) {
+    header { flex-wrap: wrap; }
+    .btn { padding: 8px 13px; }
+  }
+
   /* batch import dialog */
   dialog {
     width: min(92vw, 520px); max-height: 88vh; padding: 16px; overflow-y: auto;
@@ -180,6 +198,7 @@
       Import
       <input id="files" type="file" accept="image/*" multiple hidden>
     </label>
+    <button class="btn" id="addBtn" type="button">Add</button>
   </div>
 </header>
 <section class="toolbar">
@@ -246,6 +265,50 @@
   <div class="dialog-actions detail-actions">
     <button class="btn danger" id="detailRemove" type="button">Remove</button>
     <button class="btn" id="detailClose" type="button">Close</button>
+  </div>
+</dialog>
+
+<dialog id="addDialog" class="detail" aria-labelledby="addTitle">
+  <h2 id="addTitle">Add a book</h2>
+  <div class="tabs-inline">
+    <button class="btn primary" id="addTabSearch" type="button">Search</button>
+    <button class="btn" id="addTabManual" type="button">Enter by hand</button>
+  </div>
+  <div class="add-options">
+    <label>Shelf
+      <select id="addShelf">
+        <option value="want">Want to read</option>
+        <option value="reading">Reading</option>
+        <option value="read">Read</option>
+      </select>
+    </label>
+    <label class="check"><input id="addOwned" type="checkbox" checked> I own this book</label>
+  </div>
+
+  <section id="addSearchPane">
+    <form id="searchForm" class="search-row">
+      <input id="addQuery" type="search" placeholder="Title, author or ISBN" aria-label="Search for a book" autocomplete="off" enterkeyhint="search">
+      <button class="btn primary" type="submit">Search</button>
+    </form>
+    <p class="meta" id="addHint"></p>
+    <ul class="results" id="addResults"></ul>
+  </section>
+
+  <section id="addManualPane" hidden>
+    <form class="edit-form" id="manualForm">
+      <label>Title <input id="manualTitle" type="text" required maxlength="300"></label>
+      <label>Authors (one per line) <textarea id="manualAuthors" rows="2"></textarea></label>
+      <label>Subtitle <input id="manualSubtitle" type="text" maxlength="300"></label>
+      <label>Publisher <input id="manualPublisher" type="text" maxlength="300"></label>
+      <label>Year <input id="manualYear" type="number" inputmode="numeric" min="0" max="2100"></label>
+      <label>ISBN (optional) <input id="manualIsbn" type="text" inputmode="numeric" maxlength="32"></label>
+      <label>Cover image URL (optional) <input id="manualCover" type="url" maxlength="1000" placeholder="https://…"></label>
+      <button class="btn primary" type="submit">Add book</button>
+    </form>
+  </section>
+
+  <div class="dialog-actions">
+    <button class="btn" id="addClose" type="button">Close</button>
   </div>
 </dialog>
 
@@ -385,6 +448,7 @@ async function api(path, options) {
       : typeof detail === "string" ? detail : JSON.stringify(detail);
     const err = new Error(message);
     err.status = res.status;
+    err.detail = detail; // the raw value, for structured errors such as duplicate warnings
     throw err;
   }
   return res.status === 204 ? null : res.json();
@@ -622,7 +686,7 @@ function render() {
   $("#filtersSummary").textContent = n ? `Filters (${n})` : "Filters";
 
   const empty = !books.length
-    ? "No books yet. Tap “Scan” or “Import” to add your first."
+    ? "No books yet. Tap “Scan”, “Import” or “Add” to add your first."
     : filtering ? "No books match your search or filters." : "Nothing on this shelf yet.";
   $("#grid").replaceChildren(...(shown.length ? shown.map(card) : [el("p", { class: "empty", text: empty })]));
 }
@@ -780,6 +844,139 @@ $("#importClose").addEventListener("click", () => $("#importDialog").close());
 $("#importDialog").addEventListener("cancel", (event) => {
   if (importState.running) event.preventDefault(); // Esc shouldn't abandon a running import
 });
+
+// ---------------------------------------------------------------- add a book (search or by hand)
+
+function setAddTab(name) {
+  const search = name === "search";
+  $("#addSearchPane").hidden = !search;
+  $("#addManualPane").hidden = search;
+  $("#addTabSearch").classList.toggle("primary", search);
+  $("#addTabManual").classList.toggle("primary", !search);
+}
+
+function openAdd() {
+  $("#addShelf").value = view.tab === "all" ? "want" : view.tab;
+  $("#addOwned").checked = true;
+  setAddTab("search");
+  const dialog = $("#addDialog");
+  if (!dialog.hasAttribute("open")) dialog.showModal();
+  $("#addQuery").focus();
+}
+
+// POST /books. Returns the stored book, or null when nothing was added (the reason is toasted).
+async function postBook(payload, source, force = false) {
+  const body = { ...payload, source, force, status: $("#addShelf").value, owned: $("#addOwned").checked };
+  try {
+    return await api("/books", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    const info = err.status === 409 && err.detail && typeof err.detail === "object" ? err.detail : null;
+    if (info && info.can_force && !force && confirm(`You already have “${info.book.title}”. Add this one anyway?`)) {
+      return postBook(payload, source, true);
+    }
+    toast(info ? info.message : err.message, true);
+    return null;
+  }
+}
+
+const candidateFields = (c) => ({
+  title: c.title, authors: c.authors, subtitle: c.subtitle ?? null, publisher: c.publisher ?? null,
+  year: c.year ?? null, isbn: c.isbn ?? null, cover_url: c.cover_url ?? null, work_key: c.work_key ?? null,
+});
+
+function resultRow(candidate) {
+  const thumb = el("div", { class: "thumb" });
+  if (candidate.cover_url) {
+    const img = el("img", { src: candidate.cover_url, alt: "", loading: "lazy", referrerpolicy: "no-referrer" });
+    img.addEventListener("error", () => img.remove());
+    thumb.append(img);
+  }
+  const byline = [candidate.authors.join(", "), candidate.year].filter(Boolean).join(" · ");
+  const action = el("div", { class: "action" });
+  const row = el("li", { class: "result" }, thumb,
+    el("div", { class: "text" },
+      el("div", { class: "t", dir: "auto", text: candidate.title }),
+      el("div", { class: "meta", dir: "auto", text: byline })),
+    action);
+
+  if (candidate.in_library) {
+    action.append(el("span", { class: "meta", text: "In library" }));
+  } else {
+    const button = el("button", { class: "btn", type: "button", text: "Add" });
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      const book = await postBook(candidateFields(candidate), "search");
+      if (!book) { button.disabled = false; return; }
+      action.replaceChildren(el("span", { class: "meta", text: "Added ✓" }));
+      toast(`Added: ${book.title}`);
+      await load();
+    });
+    action.append(button);
+  }
+  return row;
+}
+
+function enterByHand(prefill = {}) {
+  $("#manualTitle").value = prefill.title ?? "";
+  $("#manualIsbn").value = prefill.isbn ?? "";
+  setAddTab("manual");
+  $("#manualTitle").focus();
+}
+
+$("#searchForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const q = $("#addQuery").value.trim();
+  if (!q) return;
+  const button = $("#searchForm button");
+  button.disabled = true;
+  $("#addResults").replaceChildren();
+  $("#addHint").textContent = "Searching…";
+  try {
+    const data = await api(`/search?q=${encodeURIComponent(q)}`);
+    $("#addResults").replaceChildren(...data.results.map(resultRow));
+    if (data.results.length) {
+      $("#addHint").textContent = data.kind === "isbn" ? `Found by ISBN ${data.isbn}.` : `${data.results.length} results.`;
+    } else {
+      const message = data.kind === "isbn" ? `Open Library doesn’t know ISBN ${data.isbn}. ` : "No matches. Try fewer words, or ";
+      const prefill = data.kind === "isbn" ? { isbn: data.isbn } : { title: q };
+      $("#addHint").replaceChildren(message, el("button", {
+        class: "link", type: "button", text: "enter it by hand", onclick: () => enterByHand(prefill),
+      }), ".");
+    }
+  } catch (err) {
+    $("#addHint").textContent = `Search failed: ${err.message}`;
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$("#manualForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const year = $("#manualYear").value.trim();
+  const book = await postBook({
+    title: $("#manualTitle").value.trim(),
+    authors: $("#manualAuthors").value.split("\n").map((s) => s.trim()).filter(Boolean),
+    subtitle: $("#manualSubtitle").value.trim() || null,
+    publisher: $("#manualPublisher").value.trim() || null,
+    year: year === "" ? null : Number(year),
+    isbn: $("#manualIsbn").value.trim() || null,
+    cover_url: $("#manualCover").value.trim() || null,
+  }, "manual");
+  if (!book) return;
+  event.target.reset();
+  toast(`Added: ${book.title}`);
+  await load();
+  $("#manualTitle").focus(); // ready for the next one
+});
+
+$("#addBtn").addEventListener("click", openAdd);
+$("#addTabSearch").addEventListener("click", () => setAddTab("search"));
+$("#addTabManual").addEventListener("click", () => setAddTab("manual"));
+$("#addClose").addEventListener("click", () => $("#addDialog").close());
 
 // ---------------------------------------------------------------- search, sort, filters
 
