@@ -5,22 +5,7 @@ import cv2
 import numpy as np
 from pyzbar import pyzbar
 
-
-def is_valid_isbn13(code: str) -> bool:
-    """Return True if `code` is a 13-digit ISBN-13 with a correct check digit."""
-    if len(code) != 13 or not code.isdigit():
-        return False
-
-    # Book barcodes always start with the Bookland prefixes 978 or 979
-    if code[:3] not in ("978", "979"):
-        return False
-
-    # Weights alternate 1, 3, 1, 3... over the first 12 digits
-    ones_sum = sum(int(d) for d in code[:12:2])
-    threes_sum = sum(int(d) * 3 for d in code[1:12:2])
-    check_digit = (10 - (ones_sum + threes_sum) % 10) % 10
-
-    return check_digit == int(code[12])
+from bookshelf.isbn import is_valid_isbn13  # noqa: F401  (re-exported for existing imports)
 
 
 def decode_isbn_from_array(img: np.ndarray) -> str | None:
