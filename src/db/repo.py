@@ -3,7 +3,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from db.migrate import migrate
+from bookshelf.db.migrate import migrate
 from bookshelf.textnorm import norm
 
 STATUSES = ("want", "reading", "read")
@@ -45,7 +45,7 @@ def init_db(conn: sqlite3.Connection) -> None:
 _SELECT = """
     SELECT b.id, b.isbn, b.title, b.subtitle, b.publisher, b.year, b.cover_url,
            {description}
-           b.work_key, b.source, b.owned, b.kobo_id,
+           b.work_key, b.source, b.owned, b.kobo_id, b.goodreads_id,
            s.status, s.rating, s.started_on, s.finished_on, s.notes,
            s.percent_read, s.seconds_read, s.last_read_on,
            (SELECT json_group_array(name) FROM (
