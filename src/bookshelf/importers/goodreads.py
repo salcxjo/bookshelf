@@ -30,7 +30,8 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from bookshelf.db import repo
+from bookshelf import coverurl
+from db import repo
 from bookshelf.isbn import normalize_isbn
 from bookshelf.textnorm import norm
 
@@ -188,10 +189,7 @@ def _better(a: GoodreadsBook, b: GoodreadsBook) -> GoodreadsBook:
     return a if key(a) >= key(b) else b
 
 
-def _cover(isbn: str | None) -> str | None:
-    """Open Library serves covers by ISBN without any lookup; ?default=false makes a missing
-    cover a 404, which the page treats as 'no cover' (it shows the title instead)."""
-    return f"https://covers.openlibrary.org/b/isbn/{isbn}-M.jpg?default=false" if isbn else None
+_cover = coverurl.for_isbn   # a cover by ISBN needs no lookup; see coverurl.py
 
 
 def _match(index: list[dict], main_titles: dict[int, str], gr: GoodreadsBook, by_gid: dict) -> tuple[int, str] | None:
@@ -264,8 +262,9 @@ def plan_import(conn: sqlite3.Connection, data: GoodreadsData) -> dict:
             if current["isbn"] is None and gr.isbn and gr.isbn not in taken_isbns:
                 entry["book"]["isbn"] = gr.isbn
                 taken_isbns.add(gr.isbn)
-                if current["cover_url"] is None:
-                    entry["book"]["cover_url"] = _cover(gr.isbn)
+            known_isbn = current["isbn"] or entry["book"].get("isbn")
+            if current["cover_url"] is None and known_isbn:
+                entry["book"]["cover_url"] = _cover(known_isbn)
             entry["link"] = current.get("goodreads_id") is None
             entry["action"] = "update" if (entry["shelf"] or entry["book"] or entry["link"]) else "unchanged"
             title, authors = current["title"], current["authors"]

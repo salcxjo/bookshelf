@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, ValidationError
 from bookshelf import llm
 from db import repo
 from lookup.openlibrary import search_works
-from bookshelf.textnorm import norm
+from bookshelf.textnorm import norm, surname
 
 MIN_RATED = 5          # fewer rated books than this and a taste score would be noise
 MAX_LOVED = 30         # books rated 4-5 stars sent as the taste profile
@@ -162,16 +162,6 @@ def similar_key(book: dict) -> str:
     return _hash("similar", _book_block(book))
 
 
-def _surname(author: str) -> str:
-    """'Paulo Coelho' and 'Coelho, Paulo' both give 'coelho'."""
-    if "," in author:
-        name = author.split(",")[0]
-    else:
-        tokens = author.split()
-        name = tokens[-1] if tokens else ""
-    return norm(name)
-
-
 def _verify(suggestion: Suggestion) -> dict | None:
     """Keep a suggestion only if Open Library has a book with that title by that author.
     Models sometimes invent plausible titles; this is what stops them reaching your shelf."""
@@ -180,11 +170,11 @@ def _verify(suggestion: Suggestion) -> dict | None:
     except Exception:       # a failed lookup just drops the suggestion
         return None
     wanted = norm(suggestion.title)
-    surname = _surname(suggestion.author) if suggestion.author else ""
+    wanted_surname = surname(suggestion.author) if suggestion.author else ""
     for hit in hits:
         found = norm(hit["title"])
         title_ok = found == wanted or found.startswith(wanted) or (wanted.startswith(found) and len(found) >= 6)
-        author_ok = not surname or any(surname in norm(a) for a in hit["authors"])
+        author_ok = not wanted_surname or any(wanted_surname in norm(a) for a in hit["authors"])
         if title_ok and author_ok:
             return {**hit, "why": suggestion.why}
     return None
