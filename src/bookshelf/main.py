@@ -12,12 +12,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from bookshelf import llm, taste
-from db import repo
-from db.migrate import migrate
+from bookshelf.db import repo
+from bookshelf.db.migrate import migrate
+from bookshelf.importers import goodreads, kobo
 from bookshelf.importers.kobo import KoboFormatError, apply_plan, plan_import, read_kobo
 from bookshelf.isbn import normalize_isbn
-from lookup.openlibrary import fetch_by_isbn, fetch_description, search_works
-from vision.barcode import decode_isbn_from_bytes
+from bookshelf.lookup.openlibrary import fetch_by_isbn, fetch_description, search_works
+from bookshelf.vision.barcode import decode_isbn_from_bytes
 
 load_dotenv()  # reads .env (GEMINI_API_KEY and friends) if there is one; real environment variables win
 
@@ -28,6 +29,7 @@ DB_PATH = Path(
 WEB_DIR = Path(__file__).resolve().parents[2] / "web"   # the page served at /
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # phone photos are usually 2-10 MB
 MAX_KOBO_BYTES = 500 * 1024 * 1024  # KoboReader.sqlite is usually a few MB to a few tens of MB
+MAX_CSV_BYTES = 20 * 1024 * 1024  # a Goodreads export is a few hundred KB even for thousands of books
 
 
 
@@ -353,6 +355,29 @@ def import_kobo(
     plan = plan_import(conn, data)
     report = apply_plan(conn, plan) if apply else plan["report"]
     report["items"] = report["items"][:1000]  # plenty for a preview
+    return report
+
+
+@app.post("/import/goodreads")
+def import_goodreads(
+    file: UploadFile,
+    apply: bool = False,
+    to_read_is_wishlist: bool = True,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Upload goodreads_library_export.csv. By default this only previews what would change;
+    send ?apply=true to import. Books you already have are only ever moved forward."""
+    data = file.file.read(MAX_CSV_BYTES + 1)
+    if len(data) > MAX_CSV_BYTES:
+        raise HTTPException(status_code=413, detail="that file is too large to be a Goodreads export")
+    try:
+        parsed = goodreads.read_goodreads(data, to_read_is_wishlist=to_read_is_wishlist)
+    except goodreads.GoodreadsFormatError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    plan = goodreads.plan_import(conn, parsed)
+    report = goodreads.apply_plan(conn, plan) if apply else plan["report"]
+    report["items"] = report["items"][:1000]
     return report
 
 

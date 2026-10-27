@@ -270,6 +270,7 @@
 <footer>
   <button class="link" id="statsBtn" type="button">Reading stats</button>
   <button class="link" id="koboBtn" type="button">Import from Kobo</button>
+  <button class="link" id="goodreadsBtn" type="button">Import from Goodreads</button>
 </footer>
 <div id="toast" role="status" aria-live="polite"></div>
 
@@ -331,6 +332,22 @@
     <button class="btn" id="koboClose" type="button">Close</button>
     <button class="btn" id="koboPreview" type="button" disabled>Preview</button>
     <button class="btn primary" id="koboApply" type="button" hidden>Import</button>
+  </div>
+</dialog>
+
+<dialog id="goodreadsDialog" class="detail" aria-labelledby="goodreadsTitle">
+  <h2 id="goodreadsTitle">Import from Goodreads</h2>
+  <p class="meta">On Goodreads open My Books, then Import and export, and export your library. Choose the CSV file here.
+    You’ll see a preview first, and nothing changes until you press Import. Books you already have are only moved forward
+    (never from Read back to Reading); your own ratings, dates and notes are kept, and only blanks are filled in.
+    Just the main author of each book is imported.</p>
+  <label class="field">Goodreads export (.csv) <input id="goodreadsFile" type="file" accept=".csv,text/csv"></label>
+  <label class="check meta"><input id="goodreadsWishlist" type="checkbox" checked> Treat my to-read shelf as a wishlist (books I don’t own yet)</label>
+  <div class="report" id="goodreadsReport" aria-live="polite"></div>
+  <div class="dialog-actions">
+    <button class="btn" id="goodreadsClose" type="button">Close</button>
+    <button class="btn" id="goodreadsPreview" type="button" disabled>Preview</button>
+    <button class="btn primary" id="goodreadsApply" type="button" hidden>Import</button>
   </div>
 </dialog>
 
@@ -1012,23 +1029,17 @@ $("#importDialog").addEventListener("cancel", (event) => {
   if (importState.running) event.preventDefault(); // Esc shouldn't abandon a running import
 });
 
-// ---------------------------------------------------------------- Kobo import
+// ---------------------------------------------------------------- imports (Kobo, Goodreads)
 
-let koboPreviewed = false;
-
-function koboQuery(apply) {
-  return `/import/kobo?apply=${apply}&include_unread=${$("#koboUnread").checked}`;
-}
-
-function renderKoboReport(report) {
+function renderImportReport(box, report) {
   const c = report.counts;
   const lines = [
     report.applied ? "Imported." : "Preview, nothing has been changed yet.",
-    `${c.create} new · ${c.update} updated · ${c.unchanged} unchanged · ${c.highlights_new} highlights to add`,
+    `${c.create} new · ${c.update} updated · ${c.unchanged} unchanged` + (c.highlights_new != null ? ` · ${c.highlights_new} highlights to add` : ""),
   ];
   if (c.duplicates_merged) lines.push(`${c.duplicates_merged} duplicate copies merged`);
   if (c.skipped_unread) lines.push(`${c.skipped_unread} unopened books left out`);
-  const box = $("#koboReport");
+  if (c.skipped_rows) lines.push(`${c.skipped_rows} row(s) left out because they have no title`);
   box.replaceChildren(...lines.map((text, i) => el("div", { class: i ? "meta" : "", text })));
   const changed = report.items.filter((item) => item.action !== "unchanged");
   if (changed.length) {
@@ -1041,46 +1052,58 @@ function renderKoboReport(report) {
   for (const warning of report.warnings) box.append(el("p", { class: "warn", text: warning }));
 }
 
-async function runKobo(apply) {
-  const file = $("#koboFile").files[0];
-  if (!file) return;
-  const form = new FormData();
-  form.append("file", file);
-  $("#koboPreview").disabled = true;
-  $("#koboApply").disabled = true;
-  $("#koboReport").textContent = apply ? "Importing…" : "Reading the file…";
-  try {
-    const report = await api(koboQuery(apply), { method: "POST", body: form });
-    renderKoboReport(report);
-    koboPreviewed = !apply;
-    $("#koboApply").hidden = apply || !(report.counts.create || report.counts.update);
-    if (apply) { await load(); toast("Kobo import finished"); }
-  } catch (err) {
-    $("#koboReport").replaceChildren(el("p", { class: "warn", text: err.message }));
-    $("#koboApply").hidden = true;
-  } finally {
-    $("#koboPreview").disabled = false;
-    $("#koboApply").disabled = false;
+// Wires up one import dialog whose elements are named #<prefix>Btn, Dialog, File, Preview, Apply, Close
+// and Report, plus the option checkbox given as `option`.
+function setupImporter(prefix, { endpoint, option, query, doneMessage }) {
+  const $$ = (suffix) => $(`#${prefix}${suffix}`);
+  let previewed = false;
+
+  async function run(apply) {
+    const file = $$("File").files[0];
+    if (!file) return;
+    const form = new FormData();
+    form.append("file", file);
+    $$("Preview").disabled = true;
+    $$("Apply").disabled = true;
+    $$("Report").textContent = apply ? "Importing…" : "Reading the file…";
+    try {
+      const report = await api(`${endpoint}?apply=${apply}&${query()}`, { method: "POST", body: form });
+      renderImportReport($$("Report"), report);
+      previewed = !apply;
+      $$("Apply").hidden = apply || !(report.counts.create || report.counts.update);
+      if (apply) { await load(); toast(doneMessage); }
+    } catch (err) {
+      $$("Report").replaceChildren(el("p", { class: "warn", text: err.message }));
+      $$("Apply").hidden = true;
+    } finally {
+      $$("Preview").disabled = false;
+      $$("Apply").disabled = false;
+    }
   }
+
+  function reset() {
+    previewed = false;
+    $$("Report").replaceChildren();
+    $$("Apply").hidden = true;
+    $$("Preview").disabled = !$$("File").files.length;
+  }
+
+  $$("Btn").addEventListener("click", () => { $$("File").value = ""; reset(); $$("Dialog").showModal(); });
+  $$("File").addEventListener("change", reset);
+  $(option).addEventListener("change", reset);   // a different choice needs a fresh preview
+  $$("Preview").addEventListener("click", () => run(false));
+  $$("Apply").addEventListener("click", () => { if (previewed) run(true); });
+  $$("Close").addEventListener("click", () => $$("Dialog").close());
 }
 
-function resetKobo() {
-  koboPreviewed = false;
-  $("#koboReport").replaceChildren();
-  $("#koboApply").hidden = true;
-  $("#koboPreview").disabled = !$("#koboFile").files.length;
-}
-
-$("#koboBtn").addEventListener("click", () => {
-  $("#koboFile").value = "";
-  resetKobo();
-  $("#koboDialog").showModal();
+setupImporter("kobo", {
+  endpoint: "/import/kobo", option: "#koboUnread", doneMessage: "Kobo import finished",
+  query: () => `include_unread=${$("#koboUnread").checked}`,
 });
-$("#koboFile").addEventListener("change", resetKobo);
-$("#koboUnread").addEventListener("change", resetKobo);   // a different choice needs a fresh preview
-$("#koboPreview").addEventListener("click", () => runKobo(false));
-$("#koboApply").addEventListener("click", () => { if (koboPreviewed) runKobo(true); });
-$("#koboClose").addEventListener("click", () => $("#koboDialog").close());
+setupImporter("goodreads", {
+  endpoint: "/import/goodreads", option: "#goodreadsWishlist", doneMessage: "Goodreads import finished",
+  query: () => `to_read_is_wishlist=${$("#goodreadsWishlist").checked}`,
+});
 
 // ---------------------------------------------------------------- stats
 
