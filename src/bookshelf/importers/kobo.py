@@ -24,6 +24,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from bookshelf import coverurl
 from db import repo
 from bookshelf.isbn import normalize_isbn
 from bookshelf.textnorm import norm
@@ -287,10 +288,23 @@ def plan_import(conn: sqlite3.Connection, data: KoboData) -> dict:
             current = repo.get_book_by_id(conn, entry["book_id"])
             entry["changes"] = _shelf_changes(current, kobo)
             entry["link"] = current.get("kobo_id") is None and entry["match"] != "kobo_id"
-            entry["action"] = "update" if (entry["changes"] or entry["link"] or entry["highlights"]) else "unchanged"
+
+            # fill in blanks on the book itself: an ISBN, and a cover (which follows from the ISBN)
+            entry["book"] = {}
+            if current["isbn"] is None and kobo.isbn and kobo.isbn not in taken_isbns:
+                entry["book"]["isbn"] = kobo.isbn
+                taken_isbns.add(kobo.isbn)
+            known_isbn = current["isbn"] or entry["book"].get("isbn")
+            if current["cover_url"] is None and known_isbn:
+                entry["book"]["cover_url"] = coverurl.for_isbn(known_isbn)
+
+            entry["action"] = "update" if (entry["changes"] or entry["book"] or entry["link"] or entry["highlights"]) else "unchanged"
             title, authors = current["title"], current["authors"]
             described = [f"{k.replace('_', ' ')}: {current.get(k) if current.get(k) is not None else '—'} → {v}"
                          for k, v in entry["changes"].items() if k not in ("seconds_read", "last_read_on")]
+            described += [f"{k}: — → {v}" for k, v in entry["book"].items() if k != "cover_url"]
+            if "cover_url" in entry["book"]:
+                described.append("cover added")
         else:
             isbn = kobo.isbn if kobo.isbn and kobo.isbn not in taken_isbns else None
             if isbn:
@@ -332,8 +346,8 @@ def apply_plan(conn: sqlite3.Connection, plan: dict) -> dict:
 
             if action == "create":
                 cursor = conn.execute(
-                    "INSERT INTO books(isbn, title, publisher, source, owned, kobo_id) VALUES (?, ?, ?, 'kobo', 1, ?)",
-                    (entry["isbn"], kobo.title, kobo.publisher, kobo.content_id),
+                    "INSERT INTO books(isbn, title, publisher, source, owned, kobo_id, cover_url) VALUES (?, ?, ?, 'kobo', 1, ?, ?)",
+                    (entry["isbn"], kobo.title, kobo.publisher, kobo.content_id, coverurl.for_isbn(entry["isbn"])),
                 )
                 book_id = cursor.lastrowid
                 repo.link_authors(conn, book_id, repo.clean_names(kobo.authors))
@@ -348,6 +362,9 @@ def apply_plan(conn: sqlite3.Connection, plan: dict) -> dict:
                 book_id = entry["book_id"]
                 if entry["link"]:
                     conn.execute("UPDATE books SET kobo_id = ? WHERE id = ?", (kobo.content_id, book_id))
+                if entry["book"]:
+                    assignments = ", ".join(f"{c} = ?" for c in entry["book"])   # keys come from plan_import
+                    conn.execute(f"UPDATE books SET {assignments} WHERE id = ?", (*entry["book"].values(), book_id))
                 if entry["changes"]:
                     conn.execute("INSERT OR IGNORE INTO shelf(book_id, status) VALUES (?, 'want')", (book_id,))
                     assignments = ", ".join(f"{c} = ?" for c in entry["changes"])   # keys come from _shelf_changes

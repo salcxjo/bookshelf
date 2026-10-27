@@ -11,14 +11,14 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Response, UploadFile
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from bookshelf import llm, taste
-from bookshelf.db import repo
-from bookshelf.db.migrate import migrate
+from bookshelf import covers, llm, taste
+from db import repo
+from db.migrate import migrate
 from bookshelf.importers import goodreads, kobo
 from bookshelf.importers.kobo import KoboFormatError, apply_plan, plan_import, read_kobo
 from bookshelf.isbn import normalize_isbn
-from bookshelf.lookup.openlibrary import fetch_by_isbn, fetch_description, search_works
-from bookshelf.vision.barcode import decode_isbn_from_bytes
+from lookup.openlibrary import fetch_by_isbn, fetch_description, search_works
+from vision.barcode import decode_isbn_from_bytes
 
 load_dotenv()  # reads .env (GEMINI_API_KEY and friends) if there is one; real environment variables win
 
@@ -322,6 +322,22 @@ def ai_similar(book_id: int, refresh: bool = False, conn: sqlite3.Connection = D
         data = _ask_model(taste.similar_books, book)
         repo.save_ai_result(conn, book_id, "similar", llm.model_name(), key, data)
     return {"books": taste.mark_in_library(conn, data["books"]), "dropped": data["dropped"], "cached": cached}
+
+
+@app.get("/covers/status")
+def covers_status(conn: sqlite3.Connection = Depends(get_db)):
+    """`missing`: books without a cover. `unchecked`: those nobody has looked up yet."""
+    return {"missing": repo.count_missing_covers(conn), "unchecked": repo.count_unchecked_missing_covers(conn)}
+
+
+@app.post("/covers/backfill")
+def covers_backfill(limit: int = Query(default=10, ge=1, le=25), conn: sqlite3.Connection = Depends(get_db)):
+    """Look up covers for the next few books that have none (by ISBN, else by title and author).
+    Call it repeatedly until `remaining` is 0; everything found so far is kept even if a call fails."""
+    try:
+        return covers.backfill(conn, limit)
+    except requests.RequestException:
+        raise HTTPException(status_code=502, detail="Open Library couldn’t be reached. The covers found so far were kept.")
 
 
 @app.get("/stats")

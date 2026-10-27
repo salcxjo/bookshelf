@@ -13,3 +13,13 @@ def norm(text: str | None) -> str:
     s = "".join(ch for ch in s if not unicodedata.combining(ch))
     s = s.replace("ي", "ی").replace("ك", "ک").replace("\u200c", "")
     return re.sub(r"[\W_]+", "", s.casefold())
+
+
+def surname(author: str) -> str:
+    """'Paulo Coelho' and 'Coelho, Paulo' both give 'coelho' (normalised)."""
+    if "," in author:
+        name = author.split(",")[0]
+    else:
+        tokens = author.split()
+        name = tokens[-1] if tokens else ""
+    return norm(name)

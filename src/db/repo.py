@@ -3,7 +3,8 @@ import json
 import sqlite3
 from pathlib import Path
 
-from bookshelf.db.migrate import migrate
+from bookshelf import coverurl
+from db.migrate import migrate
 from bookshelf.textnorm import norm
 
 STATUSES = ("want", "reading", "read")
@@ -216,7 +217,7 @@ def add_book(conn: sqlite3.Connection, book: dict) -> int:
                     "subtitle": _clean_text(book.get("subtitle")),
                     "publisher": _clean_text(book.get("publisher")),
                     "year": book.get("year"),
-                    "cover_url": _clean_text(book.get("cover_url")),
+                    "cover_url": _clean_text(book.get("cover_url")) or coverurl.for_isbn(book.get("isbn")),
                     "description": book.get("description"),
                     "work_key": book.get("work_key"),
                     "source": book.get("source", "scan"),
@@ -500,3 +501,47 @@ def save_ai_result(conn: sqlite3.Connection, book_id: int, kind: str, model: str
             """,
             (book_id, kind, model, input_hash, json.dumps(result, ensure_ascii=False)),
         )
+
+
+# --------------------------------------------------------------------------- #
+# Covers
+# --------------------------------------------------------------------------- #
+
+def count_missing_covers(conn: sqlite3.Connection) -> int:
+    return conn.execute("SELECT COUNT(*) FROM books WHERE cover_url IS NULL").fetchone()[0]
+
+
+def count_unchecked_missing_covers(conn: sqlite3.Connection) -> int:
+    """Books with no cover that nobody has looked up yet."""
+    return conn.execute("SELECT COUNT(*) FROM books WHERE cover_url IS NULL AND cover_checked_on IS NULL").fetchone()[0]
+
+
+def books_missing_cover(conn: sqlite3.Connection, limit: int) -> list[dict]:
+    """The next books to look a cover up for: id, isbn, title, work_key and authors."""
+    rows = conn.execute(
+        """
+        SELECT b.id, b.isbn, b.title, b.work_key,
+               (SELECT json_group_array(name) FROM (
+                    SELECT a.name AS name FROM book_authors ba JOIN authors a ON a.id = ba.author_id
+                    WHERE ba.book_id = b.id ORDER BY ba.rowid)) AS authors
+        FROM books b
+        WHERE b.cover_url IS NULL AND b.cover_checked_on IS NULL
+        ORDER BY b.id
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [{**dict(r), "authors": json.loads(r["authors"])} for r in rows]
+
+
+def set_cover(conn: sqlite3.Connection, book_id: int, cover_url: str, work_key: str | None = None) -> None:
+    with conn:
+        conn.execute(
+            "UPDATE books SET cover_url = ?, work_key = COALESCE(work_key, ?) WHERE id = ?",
+            (cover_url, work_key, book_id),
+        )
+
+
+def mark_cover_checked(conn: sqlite3.Connection, book_id: int) -> None:
+    with conn:
+        conn.execute("UPDATE books SET cover_checked_on = date('now', 'localtime') WHERE id = ?", (book_id,))
