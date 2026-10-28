@@ -269,6 +269,7 @@
 <main id="grid"></main>
 <footer>
   <button class="link" id="statsBtn" type="button">Reading stats</button>
+  <button class="link" id="coversBtn" type="button" hidden>Find missing ISBNs and covers</button>
   <button class="link" id="koboBtn" type="button">Import from Kobo</button>
   <button class="link" id="goodreadsBtn" type="button">Import from Goodreads</button>
 </footer>
@@ -546,6 +547,7 @@ async function api(path, options) {
 async function load() {
   books = await api("/books");
   render();
+  await refreshCoversStatus();
 }
 
 async function patch(book, changes, message) {
@@ -1029,6 +1031,57 @@ $("#importDialog").addEventListener("cancel", (event) => {
   if (importState.running) event.preventDefault(); // Esc shouldn't abandon a running import
 });
 
+// ---------------------------------------------------------------- covers
+
+let coverStatus = { unchecked: 0 };
+let coversRunning = false;
+
+// Shows the link only when there are books nobody has looked up yet (no ISBN, or no cover).
+async function refreshCoversStatus() {
+  try { coverStatus = await api("/covers/status"); } catch { coverStatus = { unchecked: 0 }; }
+  if (coversRunning) return;
+  $("#coversBtn").hidden = !coverStatus.unchecked;
+  $("#coversBtn").textContent = `Find missing ISBNs and covers (${coverStatus.unchecked})`;
+}
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+// Asks the server, a few books at a time, to search Open Library for each book's ISBN and cover.
+async function findCovers() {
+  if (coversRunning) return;
+  coversRunning = true;
+  const button = $("#coversBtn");
+  button.hidden = false;
+  button.disabled = true;
+  let checked = 0, isbns = 0, covers = 0;
+  try {
+    for (;;) {
+      const result = await api("/covers/backfill?limit=10", { method: "POST" });
+      checked += result.checked;
+      isbns += result.isbns;
+      covers += result.covers;
+      button.textContent = `Looking up ISBNs and covers… ${checked} done, ${result.remaining} to go`;
+      if (!result.checked || !result.remaining) break;
+    }
+    const found = [isbns && plural(isbns, "ISBN"), covers && plural(covers, "cover")].filter(Boolean).join(" and ");
+    toast(found ? `Found ${found}` : checked ? "Nothing new found for those books" : "Every book has already been looked up");
+  } catch (err) {
+    toast(err.message, true);   // whatever was found before the failure was kept by the server
+  } finally {
+    coversRunning = false;
+    button.disabled = false;
+    try { await load(); } catch (err) { toast(err.message, true); }
+  }
+}
+
+// Runs the lookup by itself when there is something to look up (after loading the page, an import
+// or adding a book). Each book is looked up once, so this settles down and doesn't repeat.
+function maybeFindCovers() {
+  if (coverStatus.unchecked && !coversRunning) findCovers();
+}
+
+$("#coversBtn").addEventListener("click", findCovers);
+
 // ---------------------------------------------------------------- imports (Kobo, Goodreads)
 
 function renderImportReport(box, report) {
@@ -1071,7 +1124,11 @@ function setupImporter(prefix, { endpoint, option, query, doneMessage }) {
       renderImportReport($$("Report"), report);
       previewed = !apply;
       $$("Apply").hidden = apply || !(report.counts.create || report.counts.update);
-      if (apply) { await load(); toast(doneMessage); }
+      if (apply) {
+        await load();
+        toast(doneMessage);
+        maybeFindCovers();   // books without an ISBN get looked up in the background
+      }
     } catch (err) {
       $$("Report").replaceChildren(el("p", { class: "warn", text: err.message }));
       $$("Apply").hidden = true;
@@ -1216,6 +1273,7 @@ function resultRow(candidate, { label = "Add", post = {}, note = "" } = {}) {
       action.replaceChildren(el("span", { class: "meta", text: "Added ✓" }));
       toast(`Added: ${book.title}`);
       await load();
+      maybeFindCovers();
     });
     action.append(button);
   }
@@ -1272,6 +1330,7 @@ $("#manualForm").addEventListener("submit", async (event) => {
   event.target.reset();
   toast(`Added: ${book.title}`);
   await load();
+  maybeFindCovers();
   $("#manualTitle").focus(); // ready for the next one
 });
 
@@ -1318,7 +1377,7 @@ $("#clearFilters").addEventListener("click", () => {
 });
 
 syncControls();
-load().catch((err) => toast(err.message, true));
+load().then(maybeFindCovers).catch((err) => toast(err.message, true));
 api("/ai/status").then((status) => { aiStatus = status; }).catch(() => { /* older server or offline: AI stays hidden */ });
 </script>
 </body>
