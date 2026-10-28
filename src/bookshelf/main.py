@@ -326,18 +326,20 @@ def ai_similar(book_id: int, refresh: bool = False, conn: sqlite3.Connection = D
 
 @app.get("/covers/status")
 def covers_status(conn: sqlite3.Connection = Depends(get_db)):
-    """`missing`: books without a cover. `unchecked`: those nobody has looked up yet."""
-    return {"missing": repo.count_missing_covers(conn), "unchecked": repo.count_unchecked_missing_covers(conn)}
+    """`missing`: books without a cover. `unchecked`: books with no ISBN or no cover that
+    haven't been looked up by title and author yet."""
+    return {"missing": repo.count_missing_covers(conn), "unchecked": repo.count_to_look_up(conn)}
 
 
 @app.post("/covers/backfill")
 def covers_backfill(limit: int = Query(default=10, ge=1, le=25), conn: sqlite3.Connection = Depends(get_db)):
-    """Look up covers for the next few books that have none (by ISBN, else by title and author).
-    Call it repeatedly until `remaining` is 0; everything found so far is kept even if a call fails."""
+    """Fill in missing ISBNs and covers for the next few books, by searching Open Library for
+    their title and author. Call it repeatedly until `remaining` is 0; everything found so far
+    is kept even if a call fails."""
     try:
         return covers.backfill(conn, limit)
     except requests.RequestException:
-        raise HTTPException(status_code=502, detail="Open Library couldn’t be reached. The covers found so far were kept.")
+        raise HTTPException(status_code=502, detail="Open Library couldn’t be reached. What was found so far was kept.")
 
 
 @app.get("/stats")

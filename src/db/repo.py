@@ -511,21 +511,23 @@ def count_missing_covers(conn: sqlite3.Connection) -> int:
     return conn.execute("SELECT COUNT(*) FROM books WHERE cover_url IS NULL").fetchone()[0]
 
 
-def count_unchecked_missing_covers(conn: sqlite3.Connection) -> int:
-    """Books with no cover that nobody has looked up yet."""
-    return conn.execute("SELECT COUNT(*) FROM books WHERE cover_url IS NULL AND cover_checked_on IS NULL").fetchone()[0]
+def count_to_look_up(conn: sqlite3.Connection) -> int:
+    """Books worth a title-and-author lookup that haven't had one: no ISBN, or no cover."""
+    return conn.execute(
+        "SELECT COUNT(*) FROM books WHERE cover_checked_on IS NULL AND (isbn IS NULL OR cover_url IS NULL)"
+    ).fetchone()[0]
 
 
-def books_missing_cover(conn: sqlite3.Connection, limit: int) -> list[dict]:
-    """The next books to look a cover up for: id, isbn, title, work_key and authors."""
+def books_to_look_up(conn: sqlite3.Connection, limit: int) -> list[dict]:
+    """The next books to look up: id, isbn, cover_url, title, work_key and authors."""
     rows = conn.execute(
         """
-        SELECT b.id, b.isbn, b.title, b.work_key,
+        SELECT b.id, b.isbn, b.cover_url, b.title, b.work_key,
                (SELECT json_group_array(name) FROM (
                     SELECT a.name AS name FROM book_authors ba JOIN authors a ON a.id = ba.author_id
                     WHERE ba.book_id = b.id ORDER BY ba.rowid)) AS authors
         FROM books b
-        WHERE b.cover_url IS NULL AND b.cover_checked_on IS NULL
+        WHERE b.cover_checked_on IS NULL AND (b.isbn IS NULL OR b.cover_url IS NULL)
         ORDER BY b.id
         LIMIT ?
         """,
@@ -534,12 +536,39 @@ def books_missing_cover(conn: sqlite3.Connection, limit: int) -> list[dict]:
     return [{**dict(r), "authors": json.loads(r["authors"])} for r in rows]
 
 
+def isbn_in_use(conn: sqlite3.Connection, isbn: str) -> bool:
+    return conn.execute("SELECT 1 FROM books WHERE isbn = ?", (isbn,)).fetchone() is not None
+
+
 def set_cover(conn: sqlite3.Connection, book_id: int, cover_url: str, work_key: str | None = None) -> None:
     with conn:
         conn.execute(
             "UPDATE books SET cover_url = ?, work_key = COALESCE(work_key, ?) WHERE id = ?",
             (cover_url, work_key, book_id),
         )
+
+
+def apply_lookup(conn: sqlite3.Connection, book_id: int, *, isbn: str | None = None,
+                 cover_url: str | None = None, work_key: str | None = None) -> dict:
+    """Save what a title-and-author lookup found and mark the book as looked up.
+
+    Only blanks are filled: an ISBN, cover or work key you already have is never replaced.
+    Returns {"isbn": bool, "cover": bool} saying what was actually saved.
+    """
+    with conn:
+        row = conn.execute("SELECT isbn, cover_url FROM books WHERE id = ?", (book_id,)).fetchone()
+        if row is None:
+            return {"isbn": False, "cover": False}
+        new_isbn = isbn if isbn and row["isbn"] is None else None
+        new_cover = cover_url if cover_url and row["cover_url"] is None else None
+        sql = ("UPDATE books SET isbn = COALESCE(isbn, ?), cover_url = COALESCE(cover_url, ?), "
+               "work_key = COALESCE(work_key, ?), cover_checked_on = date('now', 'localtime') WHERE id = ?")
+        try:
+            conn.execute(sql, (new_isbn, new_cover, work_key, book_id))
+        except sqlite3.IntegrityError:   # another book took that ISBN a moment ago: keep the rest
+            new_isbn = None
+            conn.execute(sql, (None, new_cover, work_key, book_id))
+    return {"isbn": new_isbn is not None, "cover": new_cover is not None}
 
 
 def mark_cover_checked(conn: sqlite3.Connection, book_id: int) -> None:
