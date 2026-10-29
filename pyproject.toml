@@ -1,12 +1,28 @@
-  [build-system]
-  requires = ["setuptools>=68"]
-  build-backend = "setuptools.build_meta"
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
 
-  [project]
-  name = "bookshelf"
-  version = "0.1.0"
-  requires-python = ">=3.10"
-  dependencies = ["fastapi", "uvicorn[standard]", "requests", "python-dotenv"]
+[project]
+name = "bookshelf"
+version = "0.1.0"
+description = "Self-hosted personal library: scan barcodes, import Kobo and Goodreads, track what you read."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "requests",
+    "python-multipart",   # file uploads
+    "python-dotenv",      # reads .env
+    "opencv-python",      # image decoding for the barcode scanner
+    "pyzbar",             # barcode decoding (needs the zbar library on Linux and macOS)
+]
 
-  [tool.setuptools.packages.find]
-  where = ["src"]
+[project.optional-dependencies]
+dev = ["pytest", "httpx", "ruff"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+bookshelf = ["db/migrations/*.sql"]

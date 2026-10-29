@@ -1,0 +1,14 @@
+pyproject.toml
+src/bookshelf/__init__.py
+src/bookshelf.egg-info/PKG-INFO
+src/bookshelf.egg-info/SOURCES.txt
+src/bookshelf.egg-info/dependency_links.txt
+src/bookshelf.egg-info/requires.txt
+src/bookshelf.egg-info/top_level.txt
+src/db/__init__.py
+src/db/repo.py
+src/lookup/__init__.py
+src/lookup/openlibrary.py
+src/vision/__init__.py
+src/vision/barcode.py
+tests/test_openlibrary.py
